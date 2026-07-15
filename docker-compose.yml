@@ -1,0 +1,3 @@
+include:
+  - path: deploy/docker-compose/docker-compose.yml
+

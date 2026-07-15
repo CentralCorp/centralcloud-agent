@@ -1,0 +1,55 @@
+server:
+  address: "127.0.0.1:9443"
+  read_timeout: 30s
+  write_timeout: 30s
+  idle_timeout: 60s
+  operation_timeout: 10m
+  max_request_bytes: 1048576
+  rate_per_second: 10
+  rate_burst: 20
+
+security:
+  mode: "mtls"
+  certificate_file: "/etc/centralcloud-agent/tls/server.crt"
+  private_key_file: "/etc/centralcloud-agent/tls/server.key"
+  client_ca_file: "/etc/centralcloud-agent/tls/client-ca.crt"
+  master_key_file: "/etc/centralcloud-agent/secrets/master.key"
+  allowed_client_sans:
+    - "spiffe://centralcloud/control-plane"
+  timestamp_skew: 5m
+
+docker:
+  socket: "unix:///var/run/docker.sock"
+  frontend_network: "centralcloud_frontend"
+  egress_network: "centralcloud_egress"
+  panel_image_repository: "ghcr.io/centralcorp/centralpanel"
+  panel_user: "10001:10001"
+  pids_limit: 256
+
+postgres:
+  host: "127.0.0.1"
+  port: 5432
+  administrator_database: "postgres"
+  administrator_username: "centralcloud_provisioner"
+  administrator_password_file: "/etc/centralcloud-agent/secrets/postgres_password"
+  backup_image: "postgres:17-alpine"
+
+traefik:
+  domain_suffix: "cloud.centralcorp.fr"
+  entrypoint: "websecure"
+  certificate_resolver: "letsencrypt"
+
+limits:
+  maximum_deployments: 50
+  default_memory_bytes: 402653184
+  default_cpu_limit: 0.5
+  maximum_concurrent_operations: 4
+
+panel:
+  migration_command: ["/app/centralpanel", "migrate", "--no-interaction"]
+
+storage:
+  database_file: "/var/lib/centralcloud-agent/state.db"
+  runtime_directory: "/run/centralcloud-agent"
+  backup_directory: "/var/lib/centralcloud-agent/backups"
+

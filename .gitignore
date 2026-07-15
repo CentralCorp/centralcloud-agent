@@ -1,0 +1,11 @@
+/bin/
+/dist/
+/coverage.out
+/data/
+/secrets/
+/.integration-tmp/
+*.db
+*.db-shm
+*.db-wal
+*.dump
+*.enc

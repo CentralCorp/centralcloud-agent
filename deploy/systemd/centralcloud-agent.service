@@ -1,0 +1,40 @@
+[Unit]
+Description=CentralPanel Cloud Node Agent
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=centralcloud-agent
+Group=centralcloud-agent
+SupplementaryGroups=docker
+ExecStart=/usr/local/bin/centralcloud-agent -config /etc/centralcloud-agent/config.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/centralcloud-agent /run/centralcloud-agent
+RuntimeDirectory=centralcloud-agent
+RuntimeDirectoryMode=0700
+StateDirectory=centralcloud-agent
+StateDirectoryMode=0700
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
