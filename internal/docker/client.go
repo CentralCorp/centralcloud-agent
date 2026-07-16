@@ -28,16 +28,20 @@ import (
 )
 
 type Client struct {
-	cli          *client.Client
-	registryAuth string
+	cli              *client.Client
+	registryAuth     string
+	preferredNetwork string
 }
 
-func New(socket, usernameFile, tokenFile string) (*Client, error) {
+func New(socket, usernameFile, tokenFile string, preferredNetwork ...string) (*Client, error) {
 	c, e := client.NewClientWithOpts(client.WithHost(socket), client.WithAPIVersionNegotiation())
 	if e != nil {
 		return nil, e
 	}
 	result := &Client{cli: c}
+	if len(preferredNetwork) > 0 {
+		result.preferredNetwork = preferredNetwork[0]
+	}
 	if usernameFile != "" && tokenFile != "" {
 		username, err := os.ReadFile(usernameFile) // #nosec G304 -- configured secret path.
 		if err != nil {
@@ -192,14 +196,25 @@ func (c *Client) InspectDeployment(ctx context.Context, id string) (domain.Conta
 	if i.State != nil && i.State.Health != nil {
 		health = i.State.Health.Status
 	}
-	address := ""
-	for _, n := range i.NetworkSettings.Networks {
-		if n.IPAddress != "" {
-			address = n.IPAddress
-			break
+	address := networkAddress(i.NetworkSettings.Networks, c.preferredNetwork)
+	return domain.ContainerInfo{ID: f.ID, Image: i.Config.Image, Status: i.State.Status, Health: health, Address: address}, nil
+}
+
+func networkAddress(networks map[string]*network.EndpointSettings, preferred string) string {
+	if endpoint := networks[preferred]; endpoint != nil && endpoint.IPAddress != "" {
+		return endpoint.IPAddress
+	}
+	names := make([]string, 0, len(networks))
+	for name := range networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if endpoint := networks[name]; endpoint != nil && endpoint.IPAddress != "" {
+			return endpoint.IPAddress
 		}
 	}
-	return domain.ContainerInfo{ID: f.ID, Image: i.Config.Image, Status: i.State.Status, Health: health, Address: address}, nil
+	return ""
 }
 func (c *Client) Exec(ctx context.Context, id string, argv []string) error {
 	f, e := c.find(ctx, id)
