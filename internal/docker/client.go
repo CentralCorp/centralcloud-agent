@@ -47,7 +47,7 @@ func New(socket, usernameFile, tokenFile string) (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read registry token: %w", err)
 		}
-		encoded, err := json.Marshal(registry.AuthConfig{Username: strings.TrimSpace(string(username)), Password: strings.TrimSpace(string(token))})
+		encoded, err := json.Marshal(registry.AuthConfig{Username: strings.TrimSpace(string(username)), Password: strings.TrimSpace(string(token))}) //nolint:gosec // Docker requires the registry credential in this auth payload.
 		if err != nil {
 			return nil, err
 		}
