@@ -44,7 +44,7 @@ func TestSimulatedProvisioning(t *testing.T) {
 	m := ccmetrics.New(reg)
 	resourceFake := &fakes.ResourceCollector{Value: contracts.ResourceResponse{MemoryAvailableBytes: 1 << 30}}
 	svc := New(c, repo, docker, pg, &fakes.HealthChecker{}, secrets, &fakes.BackupManager{}, resourceFake, ids, clock, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
-	req := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:1.0.0", Environment: map[string]string{"APP_ENV": "production"}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/health"}}
+	req := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:1.0.0", Environment: map[string]string{"APP_ENV": "production"}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/health"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
 	raw, _ := json.Marshal(req)
 	if _, e = svc.SubmitCreate(context.Background(), req, "123e4567-e89b-42d3-a456-426614174010", "POST", "/v1/deployments", raw); e != nil {
 		t.Fatal(e)
@@ -60,7 +60,7 @@ func TestSimulatedProvisioning(t *testing.T) {
 			if !pg.Created || !docker.Running {
 				t.Fatal("external fakes were not called")
 			}
-			if docker.Spec.Environment["PGPASSWORD_FILE"] == "" || docker.Spec.TraefikLabels["traefik.enable"] != "true" {
+			if docker.Spec.Environment["PGPASSWORD_FILE"] == "" || docker.Spec.SecretFiles["panel_bootstrap.json"] == "" || docker.Spec.TraefikLabels["traefik.enable"] != "true" {
 				t.Fatal("container contract incomplete")
 			}
 			return
@@ -140,4 +140,38 @@ func TestSoftDeletePreservesDatabaseAndPurgeRemovesIt(t *testing.T) {
 	if !pg.Dropped || purged.CredentialsRef != "" || len(purged.EncryptedSecret) != 0 {
 		t.Fatalf("purge incomplete: %+v", purged)
 	}
+}
+
+func TestAdminResetPayloadIsEncryptedAndExecuted(t *testing.T) {
+	svc, repo, docker, _, _, d := lifecycleService(t, &fakes.HealthChecker{})
+	req := contracts.AdminResetRequest{AdminEmail: "owner@example.test", AdminPassword: "rotated-admin-password"}
+	raw, _ := json.Marshal(req)
+	operationID := "123e4567-e89b-42d3-a456-426614174099"
+	if _, err := svc.SubmitAdminReset(context.Background(), d.Request.DeploymentID, "123e4567-e89b-42d3-a456-426614174055", "POST", "/v1/deployments/"+d.Request.DeploymentID+"/admin-reset", req, raw); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := repo.GetOperation(context.Background(), operationID)
+	if string(queued.Payload) == string(raw) || len(queued.Payload) == 0 {
+		t.Fatal("admin reset payload was persisted in plaintext")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	svc.Run(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		op, _ := repo.GetOperation(ctx, operationID)
+		if op.Status == "succeeded" {
+			cancel()
+			svc.Wait()
+			for _, call := range docker.Calls {
+				if call == "exec" {
+					return
+				}
+			}
+			t.Fatal("admin reset command was not executed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	svc.Wait()
+	t.Fatal("admin reset operation did not complete")
 }

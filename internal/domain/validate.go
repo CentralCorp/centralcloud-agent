@@ -68,6 +68,18 @@ func ValidateCreate(r *contracts.CreateDeploymentRequest, c config.Config) error
 	if len(r.Environment) > 128 {
 		errs = append(errs, errors.New("too many environment variables"))
 	}
+	if strings.TrimSpace(r.Bootstrap.AdminName) == "" || len(r.Bootstrap.AdminName) > 255 {
+		errs = append(errs, errors.New("bootstrap.admin_name is required"))
+	}
+	if !strings.Contains(r.Bootstrap.AdminEmail, "@") || len(r.Bootstrap.AdminEmail) > 255 {
+		errs = append(errs, errors.New("bootstrap.admin_email is invalid"))
+	}
+	if len(r.Bootstrap.AdminPassword) < 12 || len(r.Bootstrap.AdminPassword) > 4096 {
+		errs = append(errs, errors.New("bootstrap.admin_password must contain between 12 and 4096 characters"))
+	}
+	if len(r.Bootstrap.InternalSecret) < 32 || len(r.Bootstrap.InternalSecret) > 4096 {
+		errs = append(errs, errors.New("bootstrap.internal_secret must contain between 32 and 4096 characters"))
+	}
 	for k, v := range r.Environment {
 		if !envRE.MatchString(k) || reservedEnv[k] || len(v) > 4096 {
 			errs = append(errs, fmt.Errorf("invalid or reserved environment variable %q", k))

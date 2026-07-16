@@ -3,11 +3,13 @@ package deployment
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +30,7 @@ const (
 	OpUpgrade     = "upgrade"
 	OpDeleteSoft  = "delete_soft"
 	OpDeletePurge = "delete_purge"
+	OpAdminReset  = "admin_reset"
 )
 
 type Service struct {
@@ -45,6 +48,38 @@ type Service struct {
 	metrics   *ccmetrics.Metrics
 	wake      chan struct{}
 	wg        sync.WaitGroup
+}
+
+type permanentSecrets struct {
+	DatabasePassword string `json:"database_password"`
+	AppKey           string `json:"app_key"`
+	InternalSecret   string `json:"internal_secret"`
+}
+
+func (s *Service) encryptPermanentSecrets(databasePassword string, bootstrap contracts.Bootstrap) ([]byte, error) {
+	sum := sha256.Sum256([]byte(databasePassword + bootstrap.InternalSecret))
+	b, err := json.Marshal(permanentSecrets{
+		DatabasePassword: databasePassword,
+		AppKey:           "base64:" + base64.StdEncoding.EncodeToString(sum[:]),
+		InternalSecret:   bootstrap.InternalSecret,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.secrets.Encrypt(string(b))
+}
+
+func (s *Service) decryptPermanentSecrets(encrypted []byte) (permanentSecrets, error) {
+	value, err := s.secrets.Decrypt(encrypted)
+	if err != nil {
+		return permanentSecrets{}, err
+	}
+	var bundle permanentSecrets
+	if json.Unmarshal([]byte(value), &bundle) == nil && bundle.DatabasePassword != "" {
+		return bundle, nil
+	}
+	// Compatibility with state created before secret bundles were introduced.
+	return permanentSecrets{DatabasePassword: value}, nil
 }
 
 func New(c config.Config, r domain.StateRepository, d domain.DockerClient, p domain.PostgresProvisioner, h domain.HealthChecker, secrets domain.SecretStore, b domain.BackupManager, resources domain.ResourceCollector, ids domain.IDGenerator, clock domain.Clock, log *slog.Logger, m *ccmetrics.Metrics) *Service {
@@ -99,11 +134,21 @@ func (s *Service) SubmitCreate(ctx context.Context, r contracts.CreateDeployment
 		if e != nil {
 			return nil, e
 		}
-		enc, e := s.secrets.Encrypt(secret)
+		enc, e := s.encryptPermanentSecrets(secret, r.Bootstrap)
 		if e != nil {
 			return nil, e
 		}
-		d = domain.Deployment{Request: r, State: domain.StatePending, CredentialsRef: "cccred://deployment/" + r.DeploymentID + "/postgres", EncryptedSecret: enc, CreatedAt: s.clock.Now()}
+		bootstrapJSON, e := json.Marshal(r.Bootstrap)
+		if e != nil {
+			return nil, e
+		}
+		bootstrapEncrypted, e := s.secrets.Encrypt(string(bootstrapJSON))
+		if e != nil {
+			return nil, e
+		}
+		r.Bootstrap.AdminPassword = ""
+		r.Bootstrap.InternalSecret = ""
+		d = domain.Deployment{Request: r, State: domain.StatePending, CredentialsRef: "cccred://deployment/" + r.DeploymentID + "/postgres", EncryptedSecret: enc, EncryptedBootstrap: bootstrapEncrypted, CreatedAt: s.clock.Now()}
 		if e = s.repo.CreateDeployment(ctx, d); e != nil {
 			return nil, e
 		}
@@ -115,12 +160,22 @@ func (s *Service) SubmitCreate(ctx context.Context, r contracts.CreateDeployment
 			if e != nil {
 				return nil, e
 			}
-			d.EncryptedSecret, e = s.secrets.Encrypt(secret)
+			d.EncryptedSecret, e = s.encryptPermanentSecrets(secret, r.Bootstrap)
 			if e != nil {
 				return nil, e
 			}
 			d.CredentialsRef = "cccred://deployment/" + r.DeploymentID + "/postgres"
 		}
+		bootstrapJSON, marshalErr := json.Marshal(r.Bootstrap)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		d.EncryptedBootstrap, e = s.secrets.Encrypt(string(bootstrapJSON))
+		if e != nil {
+			return nil, e
+		}
+		r.Bootstrap.AdminPassword = ""
+		r.Bootstrap.InternalSecret = ""
 		d.Request = r
 		d.State = domain.StatePending
 		d.FailedStep = ""
@@ -130,7 +185,8 @@ func (s *Service) SubmitCreate(ctx context.Context, r contracts.CreateDeployment
 	default:
 		return nil, domain.ErrConflict
 	}
-	o := domain.Operation{ID: s.ids.New(), DeploymentID: r.DeploymentID, Type: OpCreate, Payload: raw}
+	// The raw body participates in the idempotency hash, but is never persisted because it contains bootstrap secrets.
+	o := domain.Operation{ID: s.ids.New(), DeploymentID: r.DeploymentID, Type: OpCreate}
 	if e = s.repo.CreateOperation(ctx, o); e != nil {
 		return nil, e
 	}
@@ -161,6 +217,33 @@ func (s *Service) Submit(ctx context.Context, typ, id, key, method, path string,
 	}
 	s.signal()
 	return response, e
+}
+
+func (s *Service) SubmitAdminReset(ctx context.Context, id, key, method, path string, request contracts.AdminResetRequest, raw []byte) ([]byte, error) {
+	if !strings.Contains(request.AdminEmail, "@") || len(request.AdminPassword) < 12 || len(request.AdminPassword) > 4096 {
+		return nil, fmt.Errorf("valid admin_email and a password of at least 12 characters are required")
+	}
+	hash := hashRequest(method, path, raw)
+	if b, ok, err := s.existingIdempotency(ctx, strings.ToLower(key), hash); err != nil || ok {
+		return b, err
+	}
+	if _, err := s.repo.GetDeployment(ctx, id); err != nil {
+		return nil, err
+	}
+	encrypted, err := s.secrets.Encrypt(string(raw))
+	if err != nil {
+		return nil, err
+	}
+	o := domain.Operation{ID: s.ids.New(), DeploymentID: id, Type: OpAdminReset, Payload: encrypted}
+	if err = s.repo.CreateOperation(ctx, o); err != nil {
+		return nil, err
+	}
+	response, err := s.accepted(o)
+	if err == nil {
+		err = s.repo.PutIdempotency(ctx, strings.ToLower(key), hash, response)
+	}
+	s.signal()
+	return response, err
 }
 func (s *Service) IssuePurgeToken(ctx context.Context, id, key, method, path string) ([]byte, error) {
 	key = strings.ToLower(key)
@@ -292,9 +375,25 @@ func (s *Service) execute(ctx context.Context, o domain.Operation) error {
 		return s.remove(ctx, o, false)
 	case OpDeletePurge:
 		return s.remove(ctx, o, true)
+	case OpAdminReset:
+		return s.resetAdmin(ctx, o)
 	default:
 		return fmt.Errorf("unknown operation type %q", o.Type)
 	}
+}
+
+func (s *Service) resetAdmin(ctx context.Context, o domain.Operation) error {
+	decrypted, err := s.secrets.Decrypt(o.Payload)
+	if err != nil {
+		return err
+	}
+	path, err := s.secrets.MaterializeNamed(o.DeploymentID, "panel_admin_reset.json", decrypted)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.secrets.RemoveNamed(o.DeploymentID, "panel_admin_reset.json") }()
+	_ = path // The container sees the stable /run/secrets path through its existing secret directory mounts.
+	return s.docker.Exec(ctx, o.DeploymentID, s.cfg.Panel.AdminResetCommand)
 }
 func (s *Service) step(ctx context.Context, o domain.Operation, name string, fn func() error) error {
 	_ = s.repo.RecordStep(ctx, o.ID, name, "running", "")
@@ -322,7 +421,7 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	if e != nil {
 		return e
 	}
-	secret, e := s.secrets.Decrypt(d.EncryptedSecret)
+	secretBundle, e := s.decryptPermanentSecrets(d.EncryptedSecret)
 	if e != nil {
 		return e
 	}
@@ -330,7 +429,7 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 		return e
 	}
 	if e = s.step(ctx, o, "create_database", func() error {
-		return s.postgres.EnsureRoleAndDatabase(ctx, d.Request.Database.DatabaseName, d.Request.Database.Username, secret, d.Request.DeploymentID)
+		return s.postgres.EnsureRoleAndDatabase(ctx, d.Request.Database.DatabaseName, d.Request.Database.Username, secretBundle.DatabasePassword, d.Request.DeploymentID)
 	}); e != nil {
 		return e
 	}
@@ -351,11 +450,11 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	if e = s.transition(ctx, &d, domain.StateCreatingContainer); e != nil {
 		return e
 	}
-	secretPath, e := s.secrets.Materialize(d.Request.DeploymentID, secret)
+	secretFiles, e := s.materializeSecrets(d, secretBundle)
 	if e != nil {
 		return e
 	}
-	if e = s.step(ctx, o, "create_container", func() error { _, e := s.docker.CreateContainer(ctx, s.spec(d, secretPath)); return e }); e != nil {
+	if e = s.step(ctx, o, "create_container", func() error { _, e := s.docker.CreateContainer(ctx, s.spec(d, secretFiles)); return e }); e != nil {
 		return e
 	}
 	if e = s.transition(ctx, &d, domain.StateStarting); e != nil {
@@ -370,6 +469,11 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	if e = s.step(ctx, o, "migrate", func() error { return s.docker.Exec(ctx, d.Request.DeploymentID, s.cfg.Panel.MigrationCommand) }); e != nil {
 		return e
 	}
+	d.EncryptedBootstrap = nil
+	if e = s.repo.SaveDeployment(ctx, d); e != nil {
+		return e
+	}
+	_ = s.secrets.RemoveNamed(d.Request.DeploymentID, "panel_bootstrap.json")
 	if e = s.transition(ctx, &d, domain.StateHealthchecking); e != nil {
 		return e
 	}
@@ -380,7 +484,30 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	}
 	return s.transition(ctx, &d, domain.StateActive)
 }
-func (s *Service) spec(d domain.Deployment, secretPath string) domain.ContainerSpec {
+func (s *Service) materializeSecrets(d domain.Deployment, bundle permanentSecrets) (map[string]string, error) {
+	files := map[string]string{}
+	values := map[string]string{"postgres_password": bundle.DatabasePassword, "app_key": bundle.AppKey, "internal_secret": bundle.InternalSecret}
+	if len(d.EncryptedBootstrap) > 0 {
+		bootstrap, err := s.secrets.Decrypt(d.EncryptedBootstrap)
+		if err != nil {
+			return nil, err
+		}
+		values["panel_bootstrap.json"] = bootstrap
+	}
+	for name, value := range values {
+		if value == "" {
+			continue
+		}
+		path, err := s.secrets.MaterializeNamed(d.Request.DeploymentID, name, value)
+		if err != nil {
+			return nil, err
+		}
+		files[name] = path
+	}
+	return files, nil
+}
+
+func (s *Service) spec(d domain.Deployment, secretFiles map[string]string) domain.ContainerSpec {
 	env := map[string]string{}
 	for k, v := range d.Request.Environment {
 		env[k] = v
@@ -390,7 +517,12 @@ func (s *Service) spec(d domain.Deployment, secretPath string) domain.ContainerS
 	env["PGDATABASE"] = d.Request.Database.DatabaseName
 	env["PGUSER"] = d.Request.Database.Username
 	env["PGPASSWORD_FILE"] = "/run/secrets/postgres_password"
-	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFile: secretPath, ManagementLabels: ManagementLabels(d.Request), TraefikLabels: TraefikLabels(d.Request, s.cfg), FrontendNetwork: s.cfg.Docker.FrontendNetwork, EgressNetwork: s.cfg.Docker.EgressNetwork, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}
+	env["DB_PASSWORD_FILE"] = "/run/secrets/postgres_password"
+	env["APP_KEY_FILE"] = "/run/secrets/app_key"
+	env["PANEL_BOOTSTRAP_FILE"] = "/run/secrets/panel_bootstrap.json"
+	env["CENTRALCLOUD_INTERNAL_SECRET_FILE"] = "/run/secrets/internal_secret"
+	env["PANEL_MANAGED"] = "true"
+	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFiles: secretFiles, StorageDirectory: filepath.Join(s.cfg.Storage.PanelDirectory, d.Request.DeploymentID), ManagementLabels: ManagementLabels(d.Request), TraefikLabels: TraefikLabels(d.Request, s.cfg), FrontendNetwork: s.cfg.Docker.FrontendNetwork, EgressNetwork: s.cfg.Docker.EgressNetwork, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}
 }
 func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {
 	version := r.Image
@@ -401,7 +533,12 @@ func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {
 }
 func TraefikLabels(r contracts.CreateDeploymentRequest, c config.Config) map[string]string {
 	id := "cc" + strings.ReplaceAll(r.DeploymentID, "-", "")
-	return map[string]string{"traefik.enable": "true", "traefik.docker.network": c.Docker.FrontendNetwork, "traefik.http.routers." + id + ".rule": "Host(`" + r.Hostname + "`)", "traefik.http.routers." + id + ".entrypoints": c.Traefik.Entrypoint, "traefik.http.routers." + id + ".tls.certresolver": c.Traefik.CertificateResolver, "traefik.http.services." + id + ".loadbalancer.server.port": "8080"}
+	labels := map[string]string{"traefik.enable": "true", "traefik.docker.network": c.Docker.FrontendNetwork, "traefik.http.routers." + id + ".rule": "Host(`" + r.Hostname + "`)", "traefik.http.routers." + id + ".entrypoints": c.Traefik.Entrypoint, "traefik.http.services." + id + ".loadbalancer.server.port": "8080"}
+	if c.Traefik.CertificateResolver != "" {
+		labels["traefik.http.routers."+id+".tls"] = "true"
+		labels["traefik.http.routers."+id+".tls.certresolver"] = c.Traefik.CertificateResolver
+	}
+	return labels
 }
 func (s *Service) start(ctx context.Context, o domain.Operation) error {
 	d, e := s.repo.GetDeployment(ctx, o.DeploymentID)
@@ -466,11 +603,11 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	if e = s.transition(ctx, &d, domain.StateUpdating); e != nil {
 		return e
 	}
-	secret, e := s.secrets.Decrypt(d.EncryptedSecret)
+	secretBundle, e := s.decryptPermanentSecrets(d.EncryptedSecret)
 	if e != nil {
 		return e
 	}
-	backup, e := s.backups.Create(ctx, d, secret)
+	backup, e := s.backups.Create(ctx, d, secretBundle.DatabasePassword)
 	if e != nil {
 		return e
 	}
@@ -485,9 +622,9 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	if e = s.repo.SaveDeployment(ctx, d); e != nil {
 		return e
 	}
-	secretPath, e := s.secrets.Materialize(d.Request.DeploymentID, secret)
+	secretFiles, e := s.materializeSecrets(d, secretBundle)
 	if e == nil {
-		_, e = s.docker.CreateContainer(ctx, s.spec(d, secretPath))
+		_, e = s.docker.CreateContainer(ctx, s.spec(d, secretFiles))
 	}
 	if e == nil {
 		e = s.docker.StartContainer(ctx, d.Request.DeploymentID)
@@ -501,12 +638,12 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	if e != nil {
 		failed := e
 		_ = s.docker.RemoveContainer(ctx, d.Request.DeploymentID)
-		if re := s.backups.Restore(ctx, d, secret, backup); re != nil {
+		if re := s.backups.Restore(ctx, d, secretBundle.DatabasePassword, backup); re != nil {
 			return fmt.Errorf("upgrade failed: %w; restore failed: %w", failed, re)
 		}
 		d.Request.Image = oldImage
 		_ = s.repo.SaveDeployment(ctx, d)
-		_, re := s.docker.CreateContainer(ctx, s.spec(d, secretPath))
+		_, re := s.docker.CreateContainer(ctx, s.spec(d, secretFiles))
 		if re == nil {
 			re = s.docker.StartContainer(ctx, d.Request.DeploymentID)
 		}

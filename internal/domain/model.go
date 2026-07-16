@@ -9,13 +9,14 @@ import (
 )
 
 type Deployment struct {
-	Request         contracts.CreateDeploymentRequest
-	State           State
-	CredentialsRef  string
-	EncryptedSecret []byte
-	FailedStep      string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	Request            contracts.CreateDeploymentRequest
+	State              State
+	CredentialsRef     string
+	EncryptedSecret    []byte
+	EncryptedBootstrap []byte
+	FailedStep         string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type Operation struct {
@@ -27,7 +28,8 @@ type Operation struct {
 type ContainerSpec struct {
 	Deployment                           contracts.CreateDeploymentRequest
 	Environment                          map[string]string
-	SecretFile                           string
+	SecretFiles                          map[string]string
+	StorageDirectory                     string
 	ManagementLabels                     map[string]string
 	TraefikLabels                        map[string]string
 	FrontendNetwork, EgressNetwork, User string
@@ -86,6 +88,8 @@ type SecretStore interface {
 	Encrypt(string) ([]byte, error)
 	Decrypt([]byte) (string, error)
 	Materialize(string, string) (string, error)
+	MaterializeNamed(string, string, string) (string, error)
+	RemoveNamed(string, string) error
 	Remove(string) error
 }
 type ResourceCollector interface {

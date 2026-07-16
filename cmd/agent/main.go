@@ -65,7 +65,7 @@ func run(path string, log *slog.Logger) error {
 	if e != nil {
 		return e
 	}
-	docker, e := ccdocker.New(c.Docker.Socket)
+	docker, e := ccdocker.New(c.Docker.Socket, c.Docker.RegistryUsernameFile, c.Docker.RegistryTokenFile)
 	if e != nil {
 		return e
 	}

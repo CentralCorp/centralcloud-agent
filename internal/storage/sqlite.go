@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS idempotency_keys(key TEXT PRIMARY KEY,request_hash TE
 CREATE TABLE IF NOT EXISTS purge_tokens(deployment_id TEXT NOT NULL,token_hash BLOB NOT NULL,expires_at TEXT NOT NULL,consumed_at TEXT,PRIMARY KEY(deployment_id,token_hash));
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,deployment_id TEXT NOT NULL,event TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL);`)
 	if err == nil {
+		var count int
+		err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('deployments') WHERE name='encrypted_bootstrap'`).Scan(&count)
+		if err == nil && count == 0 {
+			_, err = s.db.ExecContext(ctx, `ALTER TABLE deployments ADD COLUMN encrypted_bootstrap BLOB`)
+		}
+	}
+	if err == nil {
 		_, err = s.db.ExecContext(ctx, `UPDATE operations SET status='queued' WHERE status='running'`)
 	}
 	return err
@@ -66,7 +73,7 @@ func (s *SQLite) CreateDeployment(ctx context.Context, d domain.Deployment) erro
 		d.CreatedAt = now
 	}
 	d.UpdatedAt = now
-	_, err = s.db.ExecContext(ctx, `INSERT INTO deployments(deployment_id,request_json,state,credentials_ref,encrypted_secret,failed_step,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, d.Request.DeploymentID, b, d.State, d.CredentialsRef, d.EncryptedSecret, d.FailedStep, d.CreatedAt.Format(time.RFC3339Nano), d.UpdatedAt.Format(time.RFC3339Nano))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO deployments(deployment_id,request_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, d.Request.DeploymentID, b, d.State, d.CredentialsRef, d.EncryptedSecret, d.EncryptedBootstrap, d.FailedStep, d.CreatedAt.Format(time.RFC3339Nano), d.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil && isConstraint(err) {
 		return domain.ErrConflict
 	}
@@ -77,7 +84,7 @@ func (s *SQLite) SaveDeployment(ctx context.Context, d domain.Deployment) error 
 	if e != nil {
 		return e
 	}
-	r, e := s.db.ExecContext(ctx, `UPDATE deployments SET request_json=?,state=?,credentials_ref=?,encrypted_secret=?,failed_step=?,updated_at=? WHERE deployment_id=?`, b, d.State, d.CredentialsRef, d.EncryptedSecret, d.FailedStep, s.clock.Now().Format(time.RFC3339Nano), d.Request.DeploymentID)
+	r, e := s.db.ExecContext(ctx, `UPDATE deployments SET request_json=?,state=?,credentials_ref=?,encrypted_secret=?,encrypted_bootstrap=?,failed_step=?,updated_at=? WHERE deployment_id=?`, b, d.State, d.CredentialsRef, d.EncryptedSecret, d.EncryptedBootstrap, d.FailedStep, s.clock.Now().Format(time.RFC3339Nano), d.Request.DeploymentID)
 	if e == nil {
 		n, _ := r.RowsAffected()
 		if n == 0 {
@@ -90,7 +97,7 @@ func scanDeployment(row interface{ Scan(...any) error }) (domain.Deployment, err
 	var d domain.Deployment
 	var b []byte
 	var state, created, updated string
-	err := row.Scan(&b, &state, &d.CredentialsRef, &d.EncryptedSecret, &d.FailedStep, &created, &updated)
+	err := row.Scan(&b, &state, &d.CredentialsRef, &d.EncryptedSecret, &d.EncryptedBootstrap, &d.FailedStep, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, domain.ErrNotFound
 	}
@@ -106,10 +113,10 @@ func scanDeployment(row interface{ Scan(...any) error }) (domain.Deployment, err
 	return d, nil
 }
 func (s *SQLite) GetDeployment(ctx context.Context, id string) (domain.Deployment, error) {
-	return scanDeployment(s.db.QueryRowContext(ctx, `SELECT request_json,state,credentials_ref,encrypted_secret,failed_step,created_at,updated_at FROM deployments WHERE deployment_id=?`, id))
+	return scanDeployment(s.db.QueryRowContext(ctx, `SELECT request_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at FROM deployments WHERE deployment_id=?`, id))
 }
 func (s *SQLite) ListDeployments(ctx context.Context) ([]domain.Deployment, error) {
-	rows, e := s.db.QueryContext(ctx, `SELECT request_json,state,credentials_ref,encrypted_secret,failed_step,created_at,updated_at FROM deployments ORDER BY created_at`)
+	rows, e := s.db.QueryContext(ctx, `SELECT request_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at FROM deployments ORDER BY created_at`)
 	if e != nil {
 		return nil, e
 	}

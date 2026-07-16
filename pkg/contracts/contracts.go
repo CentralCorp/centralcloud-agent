@@ -17,6 +17,13 @@ type Healthcheck struct {
 	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
+type Bootstrap struct {
+	AdminName      string `json:"admin_name"`
+	AdminEmail     string `json:"admin_email"`
+	AdminPassword  string `json:"admin_password,omitempty"`
+	InternalSecret string `json:"internal_secret,omitempty"`
+}
+
 type CreateDeploymentRequest struct {
 	DeploymentID string            `json:"deployment_id"`
 	ProjectID    string            `json:"project_id"`
@@ -26,10 +33,16 @@ type CreateDeploymentRequest struct {
 	Resources    Resources         `json:"resources"`
 	Database     Database          `json:"database"`
 	Healthcheck  Healthcheck       `json:"healthcheck"`
+	Bootstrap    Bootstrap         `json:"bootstrap"`
 }
 
 type UpgradeRequest struct {
 	Image string `json:"image"`
+}
+
+type AdminResetRequest struct {
+	AdminEmail    string `json:"admin_email"`
+	AdminPassword string `json:"admin_password"`
 }
 
 type AcceptedOperation struct {

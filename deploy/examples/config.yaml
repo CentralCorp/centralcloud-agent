@@ -25,6 +25,8 @@ docker:
   panel_image_repository: "ghcr.io/centralcorp/centralpanel"
   panel_user: "10001:10001"
   pids_limit: 256
+  registry_username_file: "/etc/centralcloud-agent/secrets/registry_username"
+  registry_token_file: "/etc/centralcloud-agent/secrets/registry_token"
 
 postgres:
   host: "127.0.0.1"
@@ -46,10 +48,11 @@ limits:
   maximum_concurrent_operations: 4
 
 panel:
-  migration_command: ["/app/centralpanel", "migrate", "--no-interaction"]
+  migration_command: ["php", "artisan", "panel:install", "--no-interaction"]
+  admin_reset_command: ["php", "artisan", "panel:admin-reset", "--bootstrap-file=/run/secrets/panel_admin_reset.json", "--no-interaction"]
 
 storage:
   database_file: "/var/lib/centralcloud-agent/state.db"
   runtime_directory: "/run/centralcloud-agent"
   backup_directory: "/var/lib/centralcloud-agent/backups"
-
+  panel_directory: "/var/lib/centralcloud-agent/panels"

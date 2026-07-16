@@ -4,9 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,18 +22,38 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
-type Client struct{ cli *client.Client }
+type Client struct {
+	cli          *client.Client
+	registryAuth string
+}
 
-func New(socket string) (*Client, error) {
+func New(socket, usernameFile, tokenFile string) (*Client, error) {
 	c, e := client.NewClientWithOpts(client.WithHost(socket), client.WithAPIVersionNegotiation())
 	if e != nil {
 		return nil, e
 	}
-	return &Client{cli: c}, nil
+	result := &Client{cli: c}
+	if usernameFile != "" && tokenFile != "" {
+		username, err := os.ReadFile(usernameFile) // #nosec G304 -- configured secret path.
+		if err != nil {
+			return nil, fmt.Errorf("read registry username: %w", err)
+		}
+		token, err := os.ReadFile(tokenFile) // #nosec G304 -- configured secret path.
+		if err != nil {
+			return nil, fmt.Errorf("read registry token: %w", err)
+		}
+		encoded, err := json.Marshal(registry.AuthConfig{Username: strings.TrimSpace(string(username)), Password: strings.TrimSpace(string(token))})
+		if err != nil {
+			return nil, err
+		}
+		result.registryAuth = base64.URLEncoding.EncodeToString(encoded)
+	}
+	return result, nil
 }
 func (c *Client) Close() error                   { return c.cli.Close() }
 func (c *Client) Ping(ctx context.Context) error { _, e := c.cli.Ping(ctx); return e }
@@ -47,7 +72,7 @@ func (c *Client) EnsureNetwork(ctx context.Context, name string, internal bool) 
 	return e
 }
 func (c *Client) PullImage(ctx context.Context, ref string) error {
-	r, e := c.cli.ImagePull(ctx, ref, image.PullOptions{})
+	r, e := c.cli.ImagePull(ctx, ref, image.PullOptions{RegistryAuth: c.registryAuth})
 	if e != nil {
 		return e
 	}
@@ -63,6 +88,9 @@ func (c *Client) CreateContainer(ctx context.Context, s domain.ContainerSpec) (s
 	} else if !errors.Is(e, domain.ErrNotFound) {
 		return "", e
 	}
+	if e := os.MkdirAll(s.StorageDirectory, 0700); e != nil {
+		return "", fmt.Errorf("create panel storage: %w", e)
+	}
 	env := make([]string, 0, len(s.Environment))
 	for k, v := range s.Environment {
 		env = append(env, k+"="+v)
@@ -75,11 +103,31 @@ func (c *Client) CreateContainer(ctx context.Context, s domain.ContainerSpec) (s
 		labels[k] = v
 	}
 	pids := s.PidsLimit
+	binds := []string{s.StorageDirectory + ":/app/storage"}
+	names := make([]string, 0, len(s.SecretFiles))
+	for name := range s.SecretFiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	secretDirectory := ""
+	for _, name := range names {
+		if filepath.Base(name) != name {
+			return "", fmt.Errorf("invalid secret name %q", name)
+		}
+		directory := filepath.Dir(s.SecretFiles[name])
+		if secretDirectory != "" && directory != secretDirectory {
+			return "", fmt.Errorf("secret files must share a directory")
+		}
+		secretDirectory = directory
+	}
+	if secretDirectory != "" {
+		binds = append(binds, secretDirectory+":/run/secrets:ro")
+	}
 	resp, e := c.cli.ContainerCreate(ctx, &container.Config{Image: s.Deployment.Image, Env: env, Labels: labels, User: s.User}, &container.HostConfig{
 		ReadonlyRootfs: true, SecurityOpt: []string{"no-new-privileges:true"}, CapDrop: []string{"ALL"},
 		Resources: container.Resources{Memory: s.Deployment.Resources.MemoryBytes, NanoCPUs: int64(s.Deployment.Resources.CPULimit * 1e9), PidsLimit: &pids},
 		Tmpfs:     map[string]string{"/tmp": "rw,noexec,nosuid,size=64m", "/run": "rw,noexec,nosuid,size=16m"},
-		Binds:     []string{s.SecretFile + ":" + s.Environment["PGPASSWORD_FILE"] + ":ro"}, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyOnFailure, MaximumRetryCount: 3},
+		Binds:     binds, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyOnFailure, MaximumRetryCount: 3},
 	}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{s.FrontendNetwork: {}, s.EgressNetwork: {}}}, nil, name)
 	return resp.ID, e
 }

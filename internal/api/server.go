@@ -78,12 +78,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/deployments/{id}/stop", s.action(deployment.OpStop))
 	mux.HandleFunc("POST /v1/deployments/{id}/restart", s.action(deployment.OpRestart))
 	mux.HandleFunc("POST /v1/deployments/{id}/upgrade", s.upgrade)
+	mux.HandleFunc("POST /v1/deployments/{id}/admin-reset", s.adminReset)
 	mux.HandleFunc("POST /v1/deployments/{id}/purge-token", s.purgeToken)
 	mux.HandleFunc("DELETE /v1/deployments/{id}", s.delete)
 	mux.HandleFunc("GET /v1/deployments/{id}/logs", s.logs)
 	mux.HandleFunc("GET /v1/operations/{id}", s.operation)
 	mux.Handle("GET /metrics", promhttp.Handler())
-	for _, pattern := range []string{"/v1/health", "/v1/resources", "/v1/deployments", "/v1/deployments/{id}", "/v1/deployments/{id}/start", "/v1/deployments/{id}/stop", "/v1/deployments/{id}/restart", "/v1/deployments/{id}/upgrade", "/v1/deployments/{id}/purge-token", "/v1/deployments/{id}/logs", "/v1/operations/{id}", "/metrics"} {
+	for _, pattern := range []string{"/v1/health", "/v1/resources", "/v1/deployments", "/v1/deployments/{id}", "/v1/deployments/{id}/start", "/v1/deployments/{id}/stop", "/v1/deployments/{id}/restart", "/v1/deployments/{id}/upgrade", "/v1/deployments/{id}/admin-reset", "/v1/deployments/{id}/purge-token", "/v1/deployments/{id}/logs", "/v1/operations/{id}", "/metrics"} {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 		})
@@ -308,6 +309,22 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request) {
 	b, e := s.service.Submit(r.Context(), deployment.OpUpgrade, r.PathValue("id"), r.Header.Get("Idempotency-Key"), r.Method, r.URL.Path, raw)
 	if e != nil {
 		s.handleError(w, r, e)
+		return
+	}
+	s.writeRaw(w, 202, b)
+}
+func (s *Server) adminReset(w http.ResponseWriter, r *http.Request) {
+	if !s.mutation(w, r) {
+		return
+	}
+	var req contracts.AdminResetRequest
+	raw, ok := s.readJSON(w, r, &req)
+	if !ok {
+		return
+	}
+	b, err := s.service.SubmitAdminReset(r.Context(), r.PathValue("id"), r.Header.Get("Idempotency-Key"), r.Method, r.URL.Path, req, raw)
+	if err != nil {
+		s.handleError(w, r, err)
 		return
 	}
 	s.writeRaw(w, 202, b)

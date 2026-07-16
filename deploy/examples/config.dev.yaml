@@ -23,9 +23,9 @@ traefik:
   entrypoint: "websecure"
   certificate_resolver: "letsencrypt"
 panel:
-  migration_command: ["/app/centralpanel", "migrate", "--no-interaction"]
+  migration_command: ["php", "artisan", "panel:install", "--no-interaction"]
+  admin_reset_command: ["php", "artisan", "panel:admin-reset", "--bootstrap-file=/run/secrets/panel_admin_reset.json", "--no-interaction"]
 storage:
   database_file: "/var/lib/centralcloud-agent/state.db"
   runtime_directory: "/run/centralcloud-agent"
   backup_directory: "/var/lib/centralcloud-agent/backups"
-

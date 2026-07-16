@@ -39,6 +39,8 @@ type Config struct {
 		PanelImageRepository string `yaml:"panel_image_repository"`
 		PanelUser            string `yaml:"panel_user"`
 		PidsLimit            int64  `yaml:"pids_limit"`
+		RegistryUsernameFile string `yaml:"registry_username_file"`
+		RegistryTokenFile    string `yaml:"registry_token_file"`
 	} `yaml:"docker"`
 	Postgres struct {
 		Host                      string `yaml:"host"`
@@ -60,12 +62,14 @@ type Config struct {
 		MaximumConcurrentOperations int     `yaml:"maximum_concurrent_operations"`
 	} `yaml:"limits"`
 	Panel struct {
-		MigrationCommand []string `yaml:"migration_command"`
+		MigrationCommand  []string `yaml:"migration_command"`
+		AdminResetCommand []string `yaml:"admin_reset_command"`
 	} `yaml:"panel"`
 	Storage struct {
 		DatabaseFile     string `yaml:"database_file"`
 		RuntimeDirectory string `yaml:"runtime_directory"`
 		BackupDirectory  string `yaml:"backup_directory"`
+		PanelDirectory   string `yaml:"panel_directory"`
 	} `yaml:"storage"`
 }
 
@@ -96,9 +100,11 @@ func Defaults() Config {
 	c.Limits.DefaultMemoryBytes = 402653184
 	c.Limits.DefaultCPULimit = .5
 	c.Limits.MaximumConcurrentOperations = 4
+	c.Panel.AdminResetCommand = []string{"php", "artisan", "panel:admin-reset", "--bootstrap-file=/run/secrets/panel_admin_reset.json", "--no-interaction"}
 	c.Storage.DatabaseFile = "/var/lib/centralcloud-agent/state.db"
 	c.Storage.RuntimeDirectory = "/run/centralcloud-agent"
 	c.Storage.BackupDirectory = "/var/lib/centralcloud-agent/backups"
+	c.Storage.PanelDirectory = "/var/lib/centralcloud-agent/panels"
 	return c
 }
 
@@ -129,8 +135,11 @@ func applyEnv(c *Config) {
 	set("CENTRALCLOUD_SECURITY_TOKEN_FILE", &c.Security.TokenFile)
 	set("CENTRALCLOUD_SECURITY_MASTER_KEY_FILE", &c.Security.MasterKeyFile)
 	set("CENTRALCLOUD_DOCKER_SOCKET", &c.Docker.Socket)
+	set("CENTRALCLOUD_DOCKER_REGISTRY_USERNAME_FILE", &c.Docker.RegistryUsernameFile)
+	set("CENTRALCLOUD_DOCKER_REGISTRY_TOKEN_FILE", &c.Docker.RegistryTokenFile)
 	set("CENTRALCLOUD_POSTGRES_PASSWORD_FILE", &c.Postgres.AdministratorPasswordFile)
 	set("CENTRALCLOUD_STORAGE_DATABASE_FILE", &c.Storage.DatabaseFile)
+	set("CENTRALCLOUD_STORAGE_PANEL_DIRECTORY", &c.Storage.PanelDirectory)
 	if v := os.Getenv("CENTRALCLOUD_LIMITS_MAXIMUM_DEPLOYMENTS"); v != "" {
 		if n, e := strconv.Atoi(v); e == nil {
 			c.Limits.MaximumDeployments = n
@@ -158,6 +167,12 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.Docker.Socket, "unix://") {
 		e = append(e, errors.New("docker.socket must use unix://"))
 	}
+	if (c.Docker.RegistryUsernameFile == "") != (c.Docker.RegistryTokenFile == "") {
+		e = append(e, errors.New("docker registry username and token files must be configured together"))
+	}
+	if c.Storage.PanelDirectory == "" {
+		e = append(e, errors.New("storage.panel_directory is required"))
+	}
 	if c.Postgres.Host == "" || c.Postgres.AdministratorUsername == "" || c.Postgres.AdministratorPasswordFile == "" {
 		e = append(e, errors.New("postgres host, administrator username and password file are required"))
 	}
@@ -166,6 +181,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.Panel.MigrationCommand) == 0 {
 		e = append(e, errors.New("panel.migration_command is required"))
+	}
+	if len(c.Panel.AdminResetCommand) == 0 {
+		e = append(e, errors.New("panel.admin_reset_command is required"))
 	}
 	if c.Limits.MaximumDeployments < 1 || c.Limits.MaximumConcurrentOperations < 1 {
 		e = append(e, errors.New("limits must be positive"))
