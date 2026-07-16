@@ -56,6 +56,12 @@ type permanentSecrets struct {
 	InternalSecret   string `json:"internal_secret"`
 }
 
+type panelBootstrap struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 func (s *Service) encryptPermanentSecrets(databasePassword string, bootstrap contracts.Bootstrap) ([]byte, error) {
 	sum := sha256.Sum256([]byte(databasePassword + bootstrap.InternalSecret))
 	b, err := json.Marshal(permanentSecrets{
@@ -488,11 +494,23 @@ func (s *Service) materializeSecrets(d domain.Deployment, bundle permanentSecret
 	files := map[string]string{}
 	values := map[string]string{"postgres_password": bundle.DatabasePassword, "app_key": bundle.AppKey, "internal_secret": bundle.InternalSecret}
 	if len(d.EncryptedBootstrap) > 0 {
-		bootstrap, err := s.secrets.Decrypt(d.EncryptedBootstrap)
+		bootstrapJSON, err := s.secrets.Decrypt(d.EncryptedBootstrap)
 		if err != nil {
 			return nil, err
 		}
-		values["panel_bootstrap.json"] = bootstrap
+		var bootstrap contracts.Bootstrap
+		if err = json.Unmarshal([]byte(bootstrapJSON), &bootstrap); err != nil {
+			return nil, fmt.Errorf("decode panel bootstrap: %w", err)
+		}
+		panelJSON, err := json.Marshal(panelBootstrap{
+			Name:     bootstrap.AdminName,
+			Email:    bootstrap.AdminEmail,
+			Password: bootstrap.AdminPassword,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode panel bootstrap: %w", err)
+		}
+		values["panel_bootstrap.json"] = string(panelJSON)
 	}
 	for name, value := range values {
 		if value == "" {

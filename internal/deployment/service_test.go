@@ -72,6 +72,55 @@ func TestSimulatedProvisioning(t *testing.T) {
 	t.Fatal("deployment did not become active")
 }
 
+func TestMaterializeSecretsAdaptsBootstrapForPanelInstaller(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "key")
+	if err := os.WriteFile(key, []byte(base64.StdEncoding.EncodeToString(make([]byte, 32))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := auth.NewSecretStore(key, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := contracts.Bootstrap{
+		AdminName:      "Panel Owner",
+		AdminEmail:     "owner@example.test",
+		AdminPassword:  "long-bootstrap-password",
+		InternalSecret: "must-not-be-written-to-bootstrap-file",
+	}
+	raw, _ := json.Marshal(bootstrap)
+	encrypted, err := secrets.Encrypt(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{secrets: secrets}
+	deployment := domain.Deployment{
+		Request:            contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000"},
+		EncryptedBootstrap: encrypted,
+	}
+	files, err := svc.materializeSecrets(deployment, permanentSecrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialized, err := os.ReadFile(files["panel_bootstrap.json"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err = json.Unmarshal(materialized, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"name": bootstrap.AdminName, "email": bootstrap.AdminEmail, "password": bootstrap.AdminPassword}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected bootstrap fields: %#v", got)
+	}
+	for field, value := range want {
+		if got[field] != value {
+			t.Fatalf("bootstrap field %q = %q, want %q", field, got[field], value)
+		}
+	}
+}
+
 func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fakes.StateRepository, *fakes.DockerClient, *fakes.PostgresProvisioner, *fakes.BackupManager, domain.Deployment) {
 	t.Helper()
 	dir := t.TempDir()
