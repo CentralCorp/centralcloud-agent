@@ -224,3 +224,21 @@ func TestAdminResetPayloadIsEncryptedAndExecuted(t *testing.T) {
 	svc.Wait()
 	t.Fatal("admin reset operation did not complete")
 }
+
+func TestPanelAdminResetUsesInstallerFieldNames(t *testing.T) {
+	request := contracts.AdminResetRequest{AdminEmail: "owner@example.test", AdminPassword: "rotated-admin-password"}
+	panelJSON, err := json.Marshal(panelAdminReset{Email: request.AdminEmail, Password: request.AdminPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err = json.Unmarshal(panelJSON, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["email"] != request.AdminEmail || got["password"] != request.AdminPassword {
+		t.Fatalf("unexpected admin reset contract: %#v", got)
+	}
+	if _, exists := got["admin_email"]; exists {
+		t.Fatalf("agent API field leaked into panel reset contract: %#v", got)
+	}
+}

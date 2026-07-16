@@ -62,6 +62,11 @@ type panelBootstrap struct {
 	Password string `json:"password"`
 }
 
+type panelAdminReset struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 func (s *Service) encryptPermanentSecrets(databasePassword string, bootstrap contracts.Bootstrap) ([]byte, error) {
 	sum := sha256.Sum256([]byte(databasePassword + bootstrap.InternalSecret))
 	b, err := json.Marshal(permanentSecrets{
@@ -393,7 +398,15 @@ func (s *Service) resetAdmin(ctx context.Context, o domain.Operation) error {
 	if err != nil {
 		return err
 	}
-	path, err := s.secrets.MaterializeNamed(o.DeploymentID, "panel_admin_reset.json", decrypted)
+	var request contracts.AdminResetRequest
+	if err = json.Unmarshal([]byte(decrypted), &request); err != nil {
+		return fmt.Errorf("decode panel admin reset: %w", err)
+	}
+	panelJSON, err := json.Marshal(panelAdminReset{Email: request.AdminEmail, Password: request.AdminPassword})
+	if err != nil {
+		return fmt.Errorf("encode panel admin reset: %w", err)
+	}
+	path, err := s.secrets.MaterializeNamed(o.DeploymentID, "panel_admin_reset.json", string(panelJSON))
 	if err != nil {
 		return err
 	}
