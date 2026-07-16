@@ -437,10 +437,10 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 		return e
 	}
 	if e = s.step(ctx, o, "ensure_networks", func() error {
-		if e := s.docker.EnsureNetwork(ctx, s.cfg.Docker.FrontendNetwork, true); e != nil {
+		if e := s.docker.EnsureNetwork(ctx, s.cfg.Docker.FrontendNetwork, false); e != nil {
 			return e
 		}
-		return s.docker.EnsureNetwork(ctx, s.cfg.Docker.EgressNetwork, false)
+		return s.docker.EnsureNetwork(ctx, s.cfg.Docker.EgressNetwork, true)
 	}); e != nil {
 		return e
 	}

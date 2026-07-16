@@ -47,10 +47,10 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	if err = pg.EnsureRoleAndDatabase(ctx, db, user, password, id); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.EnsureNetwork(ctx, c.Docker.FrontendNetwork, true); err != nil {
+	if err = d.EnsureNetwork(ctx, c.Docker.FrontendNetwork, false); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.EnsureNetwork(ctx, c.Docker.EgressNetwork, false); err != nil {
+	if err = d.EnsureNetwork(ctx, c.Docker.EgressNetwork, true); err != nil {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(t.TempDir(), "postgres_password")
