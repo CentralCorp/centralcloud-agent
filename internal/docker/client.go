@@ -72,6 +72,12 @@ func (c *Client) EnsureNetwork(ctx context.Context, name string, internal bool) 
 	return e
 }
 func (c *Client) PullImage(ctx context.Context, ref string) error {
+	if _, _, e := c.cli.ImageInspectWithRaw(ctx, ref); e == nil {
+		return nil
+	} else if !client.IsErrNotFound(e) {
+		return fmt.Errorf("inspect image %s: %w", ref, e)
+	}
+
 	r, e := c.cli.ImagePull(ctx, ref, image.PullOptions{RegistryAuth: c.registryAuth})
 	if e != nil {
 		return e

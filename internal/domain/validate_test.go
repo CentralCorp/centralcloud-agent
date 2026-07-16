@@ -26,6 +26,15 @@ func TestValidateCreate(t *testing.T) {
 		t.Fatal("reserved secret variable accepted")
 	}
 }
+func TestValidateCreateAcceptsUUIDv7DeploymentID(t *testing.T) {
+	c := config.Defaults()
+	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
+	r := validRequest()
+	r.DeploymentID = "019f6ca3-0596-7179-948f-81d0308be869"
+	if e := ValidateCreate(&r, c); e != nil {
+		t.Fatal(e)
+	}
+}
 func TestDatabaseIdentifier(t *testing.T) {
 	for _, v := range []string{"ok_db", "a", "panel_123"} {
 		if e := ValidateDatabaseIdentifier(v); e != nil {
