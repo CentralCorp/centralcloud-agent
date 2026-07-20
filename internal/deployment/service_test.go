@@ -34,18 +34,19 @@ func TestSimulatedProvisioning(t *testing.T) {
 	c := config.Defaults()
 	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
 	c.Postgres.Host = "postgres"
-	c.Panel.MigrationCommand = []string{"/app/panel", "migrate"}
+	c.Panel.InstallCommand = []string{"/app/panel", "install"}
 	c.Limits.MaximumConcurrentOperations = 1
 	repo := fakes.NewStateRepository()
 	docker := &fakes.DockerClient{}
+	health := &fakes.HealthChecker{}
 	pg := &fakes.PostgresProvisioner{}
 	ids := &fakes.IDGenerator{Value: "123e4567-e89b-42d3-a456-426614174099"}
 	clock := &fakes.Clock{Time: time.Now().UTC()}
 	reg := prometheus.NewRegistry()
 	m := ccmetrics.New(reg)
 	resourceFake := &fakes.ResourceCollector{Value: contracts.ResourceResponse{MemoryAvailableBytes: 1 << 30}}
-	svc := New(c, repo, docker, pg, &fakes.HealthChecker{}, secrets, &fakes.BackupManager{}, &fakes.DeploymentStorage{Root: dir}, resourceFake, ids, clock, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
-	req := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:1.0.0", Environment: map[string]string{"APP_ENV": "production"}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/health"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
+	svc := New(c, repo, docker, pg, health, secrets, &fakes.BackupManager{}, &fakes.DeploymentStorage{Root: dir}, resourceFake, ids, clock, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
+	req := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0", Environment: map[string]string{}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/up"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
 	raw, _ := json.Marshal(req)
 	if _, e = svc.SubmitCreate(context.Background(), req, "123e4567-e89b-42d3-a456-426614174010", "POST", "/v1/deployments", raw); e != nil {
 		t.Fatal(e)
@@ -63,6 +64,24 @@ func TestSimulatedProvisioning(t *testing.T) {
 			}
 			if docker.Spec.Environment["PGPASSWORD_FILE"] == "" || docker.Spec.SecretFiles["panel_bootstrap.json"] == "" || docker.Spec.TraefikLabels["traefik.enable"] != "true" {
 				t.Fatal("container contract incomplete")
+			}
+			wantEnvironment := map[string]string{
+				"APP_ENV":           "production",
+				"APP_URL":           "https://example.cloud.centralcorp.fr",
+				"CENTRALPANEL_MODE": "centralcloud",
+				"CLOUD_PROJECT_ID":  req.ProjectID,
+				"PANEL_MANAGED":     "true",
+			}
+			for key, want := range wantEnvironment {
+				if got := docker.Spec.Environment[key]; got != want {
+					t.Fatalf("environment %s=%q, want %q", key, got, want)
+				}
+			}
+			if health.N != 2 {
+				t.Fatalf("health checks=%d, want readiness before and health after installation", health.N)
+			}
+			if len(docker.ExecCommands) != 1 || strings.Join(docker.ExecCommands[0], " ") != strings.Join(c.Panel.InstallCommand, " ") {
+				t.Fatalf("unexpected install command: %#v", docker.ExecCommands)
 			}
 			return
 		}
@@ -139,8 +158,7 @@ func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fak
 	c := config.Defaults()
 	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
 	c.Postgres.Host = "postgres"
-	c.Panel.MigrationCommand = []string{"/app/panel", "migrate"}
-	r := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174020", ProjectID: "123e4567-e89b-42d3-a456-426614174021", Hostname: "lifecycle.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:1.0.0", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: "panel_lifecycle_db", Username: "panel_lifecycle_user"}, Healthcheck: contracts.Healthcheck{Path: "/health", TimeoutSeconds: 5}}
+	r := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174020", ProjectID: "123e4567-e89b-42d3-a456-426614174021", Hostname: "lifecycle.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: "panel_lifecycle_db", Username: "panel_lifecycle_user"}, Healthcheck: contracts.Healthcheck{Path: "/up", TimeoutSeconds: 5}}
 	d := domain.Deployment{Request: r, State: domain.StateActive, CredentialsRef: "cccred://deployment/" + r.DeploymentID + "/postgres", EncryptedSecret: encrypted}
 	repo := fakes.NewStateRepository()
 	if err = repo.CreateDeployment(context.Background(), d); err != nil {
@@ -158,8 +176,8 @@ func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fak
 
 func TestUpgradeRollsBackImageAndDatabaseOnHealthFailure(t *testing.T) {
 	health := &fakes.SequenceHealthChecker{Errors: []error{errors.New("new image unhealthy"), nil}}
-	svc, repo, _, _, backups, localData, d := lifecycleService(t, health)
-	payload, _ := json.Marshal(contracts.UpgradeRequest{Image: "ghcr.io/centralcorp/centralpanel:2.0.0"})
+	svc, repo, docker, _, backups, localData, d := lifecycleService(t, health)
+	payload, _ := json.Marshal(contracts.UpgradeRequest{Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:2.0.0"})
 	err := svc.upgrade(context.Background(), domain.Operation{ID: "upgrade", DeploymentID: d.Request.DeploymentID, Type: OpUpgrade, Payload: payload})
 	var rolledBack *rollbackError
 	if !errors.As(err, &rolledBack) {
@@ -172,17 +190,20 @@ func TestUpgradeRollsBackImageAndDatabaseOnHealthFailure(t *testing.T) {
 	if localData.PanelPurged {
 		t.Fatal("upgrade purged persistent panel storage")
 	}
+	if len(docker.ExecCommands) != 1 || strings.Join(docker.ExecCommands[0], " ") != "php artisan migrate --force --no-interaction" {
+		t.Fatalf("unexpected upgrade migration command: %#v", docker.ExecCommands)
+	}
 }
 
 func TestSubmitUpgradeAppliesDigestPolicy(t *testing.T) {
 	svc, _, _, _, _, _, d := lifecycleService(t, &fakes.HealthChecker{})
 	svc.cfg.Docker.RequireImageDigest = true
-	tagged := contracts.UpgradeRequest{Image: "ghcr.io/centralcorp/centralpanel:2.0.0"}
+	tagged := contracts.UpgradeRequest{Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:2.0.0"}
 	raw, _ := json.Marshal(tagged)
 	if _, err := svc.SubmitUpgrade(context.Background(), d.Request.DeploymentID, "123e4567-e89b-42d3-a456-426614174051", "POST", "/upgrade", tagged, raw); err == nil {
 		t.Fatal("mutable upgrade tag accepted while digest policy enabled")
 	}
-	digested := contracts.UpgradeRequest{Image: "ghcr.io/centralcorp/centralpanel@sha256:" + strings.Repeat("a", 64)}
+	digested := contracts.UpgradeRequest{Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud@sha256:" + strings.Repeat("a", 64)}
 	raw, _ = json.Marshal(digested)
 	if _, err := svc.SubmitUpgrade(context.Background(), d.Request.DeploymentID, "123e4567-e89b-42d3-a456-426614174052", "POST", "/upgrade", digested, raw); err != nil {
 		t.Fatalf("digest upgrade rejected: %v", err)

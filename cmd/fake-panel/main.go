@@ -16,7 +16,7 @@ func main() {
 			return
 		case "healthcheck":
 			c := http.Client{Timeout: time.Second}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:8080/health", nil)
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:8080/up", nil)
 			r, e := c.Do(req)
 			if e != nil || r.StatusCode != 200 {
 				os.Exit(1)
@@ -35,10 +35,12 @@ func main() {
 			return
 		}
 	}
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	health := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
-	})
+	}
+	http.HandleFunc("/up", health)
+	http.HandleFunc("/health", health)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, "fake panel") })
 	server := &http.Server{Addr: ":8080", ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	if e := server.ListenAndServe(); e != nil {

@@ -72,6 +72,7 @@ type Config struct {
 		MaximumConcurrentOperations int     `yaml:"maximum_concurrent_operations"`
 	} `yaml:"limits"`
 	Panel struct {
+		InstallCommand         []string `yaml:"install_command"`
 		MigrationCommand       []string `yaml:"migration_command"`
 		AdminResetCommand      []string `yaml:"admin_reset_command"`
 		AllowedEnvironmentKeys []string `yaml:"allowed_environment_keys"`
@@ -99,7 +100,7 @@ func Defaults() Config {
 	c.Docker.Socket = "unix:///var/run/docker.sock"
 	c.Docker.FrontendNetwork = "centralcloud_frontend"
 	c.Docker.EgressNetwork = "centralcloud_egress"
-	c.Docker.PanelImageRepository = "ghcr.io/centralcorp/centralpanel"
+	c.Docker.PanelImageRepository = "ghcr.io/centralcorp-cloud/centralpanel-cloud"
 	c.Docker.PanelUser = "10001:10001"
 	c.Docker.PidsLimit = 256
 	c.Postgres.Port = 5432
@@ -112,8 +113,9 @@ func Defaults() Config {
 	c.Limits.DefaultMemoryBytes = 402653184
 	c.Limits.DefaultCPULimit = .5
 	c.Limits.MaximumConcurrentOperations = 4
+	c.Panel.InstallCommand = []string{"php", "artisan", "auto:install", "--bootstrap-file=/run/secrets/panel_bootstrap.json", "--no-interaction"}
+	c.Panel.MigrationCommand = []string{"php", "artisan", "migrate", "--force", "--no-interaction"}
 	c.Panel.AdminResetCommand = []string{"php", "artisan", "panel:admin-reset", "--bootstrap-file=/run/secrets/panel_admin_reset.json", "--no-interaction"}
-	c.Panel.AllowedEnvironmentKeys = []string{"APP_ENV", "CENTRALPANEL_MODE", "CLOUD_PROJECT_ID"}
 	c.Storage.DatabaseFile = "/var/lib/centralcloud-agent/state.db"
 	c.Storage.RuntimeDirectory = "/run/centralcloud-agent"
 	c.Storage.BackupDirectory = "/var/lib/centralcloud-agent/backups"
@@ -205,6 +207,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Traefik.ContainerName) == "" {
 		e = append(e, errors.New("traefik.container_name is required"))
+	}
+	if len(c.Panel.InstallCommand) == 0 {
+		e = append(e, errors.New("panel.install_command is required"))
 	}
 	if len(c.Panel.MigrationCommand) == 0 {
 		e = append(e, errors.New("panel.migration_command is required"))

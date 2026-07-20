@@ -2,12 +2,8 @@
   "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
   "project_id": "123e4567-e89b-42d3-a456-426614174001",
   "hostname": "example.cloud.centralcorp.fr",
-  "image": "ghcr.io/centralcorp/centralpanel@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "environment": {
-    "APP_ENV": "production",
-    "CENTRALPANEL_MODE": "cloud",
-    "CLOUD_PROJECT_ID": "123e4567-e89b-42d3-a456-426614174001"
-  },
+  "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "environment": {},
   "resources": {
     "memory_bytes": 402653184,
     "cpu_limit": 0.5
@@ -17,7 +13,7 @@
     "username": "panel_abcd_user"
   },
   "healthcheck": {
-    "path": "/health",
+    "path": "/up",
     "timeout_seconds": 60
   },
   "bootstrap": {

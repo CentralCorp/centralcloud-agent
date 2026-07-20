@@ -28,6 +28,7 @@ type DockerClient struct {
 	Spec            domain.ContainerSpec
 	Exists, Running bool
 	Calls           []string
+	ExecCommands    [][]string
 	LogsValue       []string
 }
 
@@ -77,7 +78,13 @@ func (d *DockerClient) InspectDeployment(context.Context, string) (domain.Contai
 	}
 	return domain.ContainerInfo{ID: "fake-container", Status: status, Health: health, Address: "127.0.0.1"}, nil
 }
-func (d *DockerClient) Exec(context.Context, string, []string) error { d.add("exec"); return nil }
+func (d *DockerClient) Exec(_ context.Context, _ string, command []string) error {
+	d.add("exec")
+	d.mu.Lock()
+	d.ExecCommands = append(d.ExecCommands, append([]string(nil), command...))
+	d.mu.Unlock()
+	return nil
+}
 func (d *DockerClient) Logs(context.Context, string, time.Time, int) ([]string, time.Time, error) {
 	return d.LogsValue, time.Now(), nil
 }
@@ -103,9 +110,15 @@ func (p *PostgresProvisioner) DropRoleAndDatabase(context.Context, string, strin
 	return nil
 }
 
-type HealthChecker struct{ Err error }
+type HealthChecker struct {
+	Err error
+	N   int
+}
 
-func (h *HealthChecker) Wait(context.Context, string, string, time.Duration) error { return h.Err }
+func (h *HealthChecker) Wait(context.Context, string, string, time.Duration) error {
+	h.N++
+	return h.Err
+}
 
 type SequenceHealthChecker struct {
 	Errors []error

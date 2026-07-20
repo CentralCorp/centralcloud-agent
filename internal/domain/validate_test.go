@@ -9,7 +9,7 @@ import (
 )
 
 func validRequest() contracts.CreateDeploymentRequest {
-	return contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:1.0.0", Environment: map[string]string{"APP_ENV": "production"}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/health"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
+	return contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0", Environment: map[string]string{}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/up"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
 }
 func TestValidateCreate(t *testing.T) {
 	c := config.Defaults()
@@ -52,7 +52,7 @@ func TestDatabaseIdentifier(t *testing.T) {
 func TestEnvironmentAllowlistAndSecretKeys(t *testing.T) {
 	c := config.Defaults()
 	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
-	for _, key := range []string{"UNKNOWN", "API_TOKEN", "APP_KEY", "PGPASSWORD"} {
+	for _, key := range []string{"UNKNOWN", "API_TOKEN", "APP_KEY", "PGPASSWORD", "APP_ENV", "APP_URL", "CENTRALPANEL_MODE", "CLOUD_PROJECT_ID"} {
 		r := validRequest()
 		r.Environment = map[string]string{key: "must-not-appear-in-error"}
 		err := ValidateCreate(&r, c)
@@ -63,8 +63,9 @@ func TestEnvironmentAllowlistAndSecretKeys(t *testing.T) {
 			t.Fatalf("environment value leaked for %q: %v", key, err)
 		}
 	}
+	c.Panel.AllowedEnvironmentKeys = []string{"FEATURE_FLAG"}
 	r := validRequest()
-	r.Environment = map[string]string{"CENTRALPANEL_MODE": "cloud"}
+	r.Environment = map[string]string{"FEATURE_FLAG": "enabled"}
 	if err := ValidateCreate(&r, c); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +83,7 @@ func TestPanelImageDigestPolicy(t *testing.T) {
 		t.Fatal("mutable tag accepted while digest policy enabled")
 	}
 	digested := validRequest()
-	digested.Image = "ghcr.io/centralcorp/centralpanel@sha256:" + strings.Repeat("a", 64)
+	digested.Image = "ghcr.io/centralcorp-cloud/centralpanel-cloud@sha256:" + strings.Repeat("a", 64)
 	if err := ValidateCreate(&digested, c); err != nil {
 		t.Fatalf("valid digest rejected: %v", err)
 	}

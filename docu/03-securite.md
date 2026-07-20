@@ -104,6 +104,8 @@ Les secrets sont écrits sous `/run/centralcloud-agent/deployments/{id}` avec :
 - montage en lecture seule dans `/run/secrets` du conteneur ;
 - variables `*_FILE` plutôt que valeurs secrètes dans l'environnement.
 
+L'agent construit lui-même `APP_ENV=production`, `APP_URL=https://<hostname>`, `CENTRALPANEL_MODE=centralcloud`, `CLOUD_PROJECT_ID=<project_id>` et `PANEL_MANAGED=true`. Ces variables sont réservées : le Control Plane ne peut pas envoyer une valeur contradictoire dans `environment`. L'allowlist personnalisée est vide par défaut et ne doit contenir que des options publiques propres à l'application.
+
 Le secret de bootstrap et le fichier de reset administrateur sont supprimés après usage. Les identifiants du registre et le mot de passe administrateur PostgreSQL sont eux aussi lus depuis des fichiers configurés.
 
 La clé maître ne doit pas être stockée avec une sauvegarde de `state.db` sans protection supplémentaire. Une compromission simultanée des deux permet de déchiffrer les secrets.

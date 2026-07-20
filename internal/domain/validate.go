@@ -22,6 +22,7 @@ var (
 var reservedEnv = map[string]bool{
 	"PGHOST": true, "PGPORT": true, "PGDATABASE": true, "PGUSER": true, "PGPASSWORD": true, "PGPASSWORD_FILE": true, "DATABASE_URL": true,
 	"DB_PASSWORD_FILE": true, "APP_KEY_FILE": true, "PANEL_BOOTSTRAP_FILE": true, "CENTRALCLOUD_INTERNAL_SECRET_FILE": true, "PANEL_MANAGED": true,
+	"APP_ENV": true, "APP_URL": true, "CENTRALPANEL_MODE": true, "CLOUD_PROJECT_ID": true,
 }
 
 var sensitiveEnvSegments = map[string]bool{

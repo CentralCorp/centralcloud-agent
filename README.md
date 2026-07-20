@@ -38,14 +38,16 @@ chown root:centralcloud-agent /etc/centralcloud-agent/secrets/*
 chmod 0640 /etc/centralcloud-agent/secrets/*
 ```
 
-La clé maître décodée doit faire exactement 32 octets. En mode développement, créer également `api_token` avec au moins 32 caractères. Configurer `node.id`/`node.name`, `traefik.container_name`, l'allowlist `panel.allowed_environment_keys` et, en production, `docker.require_image_digest: true`. Si `node.id` est omis, il est généré une seule fois dans SQLite. Les variables documentées `CENTRALCLOUD_*` ne transportent jamais directement un secret.
+La clé maître décodée doit faire exactement 32 octets. En mode développement, créer également `api_token` avec au moins 32 caractères. Configurer `node.id`/`node.name`, `traefik.container_name`, l'allowlist `panel.allowed_environment_keys` (vide par défaut) et, en production, `docker.require_image_digest: true`. Si `node.id` est omis, il est généré une seule fois dans SQLite. Les variables documentées `CENTRALCLOUD_*` ne transportent jamais directement un secret.
 
 L’image CentralPanel doit :
 
 - écouter en HTTP sur le port interne 8080 et déclarer un `HEALTHCHECK` Docker;
 - fonctionner avec l’utilisateur configuré et un rootfs read-only;
 - accepter `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` et `PGPASSWORD_FILE`;
-- fournir la commande `panel.migration_command` sous forme d’arguments, sans shell.
+- exposer `/up` et fournir `auto:install --bootstrap-file`, `migrate --force` ainsi que `panel:admin-reset --bootstrap-file`.
+
+Le dépôt autorisé par défaut est `ghcr.io/centralcorp-cloud/centralpanel-cloud`. L'agent injecte les valeurs managées `APP_ENV`, `APP_URL`, `CENTRALPANEL_MODE`, `CLOUD_PROJECT_ID` et `PANEL_MANAGED`; une requête API ne peut pas les remplacer.
 
 Les panels utilisent `centralcloud-fe-<deployment_id>` pour Traefik et un backend `Internal` distinct pour PostgreSQL. `postgres.host` sert à l'agent ; les panels utilisent `postgres.panel_host` ou, par défaut, la gateway de leur backend. PostgreSQL et son `pg_hba.conf` doivent accepter uniquement les bridges nécessaires et ne jamais être exposés publiquement.
 

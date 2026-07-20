@@ -499,10 +499,15 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	if e = s.step(ctx, o, "start_container", func() error { return s.docker.StartContainer(ctx, d.Request.DeploymentID) }); e != nil {
 		return e
 	}
+	if e = s.step(ctx, o, "wait_runtime", func() error {
+		return s.health.Wait(ctx, d.Request.DeploymentID, d.Request.Healthcheck.Path, time.Duration(d.Request.Healthcheck.TimeoutSeconds)*time.Second)
+	}); e != nil {
+		return e
+	}
 	if e = s.transition(ctx, &d, domain.StateMigrating); e != nil {
 		return e
 	}
-	if e = s.step(ctx, o, "migrate", func() error { return s.docker.Exec(ctx, d.Request.DeploymentID, s.cfg.Panel.MigrationCommand) }); e != nil {
+	if e = s.step(ctx, o, "install_panel", func() error { return s.docker.Exec(ctx, d.Request.DeploymentID, s.cfg.Panel.InstallCommand) }); e != nil {
 		return e
 	}
 	d.EncryptedBootstrap = nil
@@ -574,6 +579,10 @@ func (s *Service) spec(d domain.Deployment, secretFiles map[string]string, netwo
 	env["PANEL_BOOTSTRAP_FILE"] = "/run/secrets/panel_bootstrap.json"
 	env["CENTRALCLOUD_INTERNAL_SECRET_FILE"] = "/run/secrets/internal_secret"
 	env["PANEL_MANAGED"] = "true"
+	env["APP_ENV"] = "production"
+	env["APP_URL"] = "https://" + d.Request.Hostname
+	env["CENTRALPANEL_MODE"] = "centralcloud"
+	env["CLOUD_PROJECT_ID"] = d.Request.ProjectID
 	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFiles: secretFiles, StorageDirectory: storageDirectory, ManagementLabels: ManagementLabels(d.Request), TraefikLabels: TraefikLabels(d.Request, s.cfg, networks.Frontend), FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}
 }
 func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {

@@ -10,7 +10,7 @@ security:
   allowed_source_cidrs: []
 docker:
   socket: "unix:///var/run/docker.sock"
-  panel_image_repository: "ghcr.io/centralcorp/centralpanel"
+  panel_image_repository: "ghcr.io/centralcorp-cloud/centralpanel-cloud"
   require_image_digest: false
   panel_user: "10001:10001"
   pids_limit: 256
@@ -28,8 +28,9 @@ traefik:
   entrypoint: "websecure"
   certificate_resolver: "letsencrypt"
 panel:
-  allowed_environment_keys: ["APP_ENV", "CENTRALPANEL_MODE", "CLOUD_PROJECT_ID"]
-  migration_command: ["php", "artisan", "panel:install", "--no-interaction"]
+  allowed_environment_keys: []
+  install_command: ["php", "artisan", "auto:install", "--bootstrap-file=/run/secrets/panel_bootstrap.json", "--no-interaction"]
+  migration_command: ["php", "artisan", "migrate", "--force", "--no-interaction"]
   admin_reset_command: ["php", "artisan", "panel:admin-reset", "--bootstrap-file=/run/secrets/panel_admin_reset.json", "--no-interaction"]
 storage:
   database_file: "/var/lib/centralcloud-agent/state.db"

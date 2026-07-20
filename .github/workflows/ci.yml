@@ -81,7 +81,7 @@ jobs:
       - name: Start isolated infrastructure
         run: docker compose up -d postgres traefik && docker compose exec -T postgres sh -c 'until pg_isready -U centralcloud_provisioner; do sleep 1; done'
       - name: Build fake panel
-        run: docker build -f deploy/docker-compose/fake-panel.Dockerfile -t ghcr.io/centralcorp/centralpanel:integration .
+        run: docker build -f deploy/docker-compose/fake-panel.Dockerfile -t ghcr.io/centralcorp-cloud/centralpanel-cloud:integration .
       - name: Integration lifecycle
         env:
           CENTRALCLOUD_INTEGRATION: "1"

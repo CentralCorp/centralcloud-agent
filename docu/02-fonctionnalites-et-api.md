@@ -113,12 +113,8 @@ Corps complet :
   "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
   "project_id": "123e4567-e89b-42d3-a456-426614174001",
   "hostname": "example.cloud.centralcorp.fr",
-  "image": "ghcr.io/centralcorp/centralpanel:1.0.0",
-  "environment": {
-    "APP_ENV": "production",
-    "CENTRALPANEL_MODE": "cloud",
-    "CLOUD_PROJECT_ID": "123e4567-e89b-42d3-a456-426614174001"
-  },
+  "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0",
+  "environment": {},
   "resources": {
     "memory_bytes": 402653184,
     "cpu_limit": 0.5
@@ -128,7 +124,7 @@ Corps complet :
     "username": "panel_abcd_user"
   },
   "healthcheck": {
-    "path": "/health",
+    "path": "/up",
     "timeout_seconds": 60
   },
   "bootstrap": {
@@ -159,7 +155,7 @@ Corps complet :
 | `bootstrap.admin_password` | 12 à 4096 caractères |
 | `bootstrap.internal_secret` | 32 à 4096 caractères |
 
-Les variables PostgreSQL, `DATABASE_URL` et les variables internes comme `APP_KEY_FILE`, `PANEL_BOOTSTRAP_FILE` ou `PANEL_MANAGED` sont réservées. Les noms à sémantique secrète (`PASSWORD`, `TOKEN`, `SECRET`, `CREDENTIAL`, `KEY`, etc.) sont refusés même s'ils figurent par erreur dans l'allowlist. L'erreur cite uniquement la clé. Les secrets passent exclusivement par les fichiers protégés existants.
+Les variables PostgreSQL, `DATABASE_URL` et les variables internes comme `APP_KEY_FILE`, `PANEL_BOOTSTRAP_FILE` ou `PANEL_MANAGED` sont réservées. Il en va de même pour `APP_ENV`, `APP_URL`, `CENTRALPANEL_MODE` et `CLOUD_PROJECT_ID`, car l'agent les dérive des données validées et fournit respectivement `production`, `https://<hostname>`, `centralcloud` et le `project_id`. Les noms à sémantique secrète (`PASSWORD`, `TOKEN`, `SECRET`, `CREDENTIAL`, `KEY`, etc.) sont refusés même s'ils figurent par erreur dans l'allowlist. L'erreur cite uniquement la clé. Les secrets passent exclusivement par les fichiers protégés existants.
 
 ### Fonctionnement interne
 
@@ -169,10 +165,10 @@ Les variables PostgreSQL, `DATABASE_URL` et les variables internes comme `APP_KE
 4. création de `centralcloud-fe-<id>` et `centralcloud-be-<id>`, vérification de leurs labels puis connexion de Traefik au frontend ;
 5. téléchargement de l'image autorisée ;
 6. matérialisation temporaire des secrets en fichiers `0400` ;
-7. création/vérification du stockage propriétaire puis création du conteneur sur ses deux réseaux dédiés ;
-8. exécution de `panel.migration_command` ;
-9. suppression du secret de bootstrap ;
-10. attente du `HEALTHCHECK` Docker et d'une réponse HTTP `2xx` sur l'adresse backend du panel.
+7. création/vérification du stockage propriétaire, montage sur `/app/storage`, puis création du conteneur sur ses deux réseaux dédiés ;
+8. démarrage et attente du `HEALTHCHECK` Docker et d'une réponse HTTP `2xx` sur `/up` ;
+9. exécution sans shell de `php artisan auto:install --bootstrap-file=/run/secrets/panel_bootstrap.json --no-interaction` ;
+10. suppression du secret de bootstrap puis nouvelle vérification de santé.
 
 `PGHOST` vaut `postgres.panel_host` lorsqu'il est configuré, sinon la gateway du backend isolé. Le panel ne partage ainsi aucun réseau avec un autre panel tout en atteignant PostgreSQL local.
 
@@ -189,11 +185,11 @@ Le déploiement passe à l'état `active` lorsque toutes les étapes réussissen
       "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
       "project_id": "123e4567-e89b-42d3-a456-426614174001",
       "hostname": "example.cloud.centralcorp.fr",
-      "image": "ghcr.io/centralcorp/centralpanel:1.0.0",
+      "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0",
       "state": "active",
       "resources": {"memory_bytes": 402653184, "cpu_limit": 0.5},
       "database": {"database_name": "panel_abcd_db", "username": "panel_abcd_user"},
-      "healthcheck": {"path": "/health", "timeout_seconds": 60},
+      "healthcheck": {"path": "/up", "timeout_seconds": 60},
       "credentials_ref": "cccred://deployment/123e4567-e89b-42d3-a456-426614174000/postgres",
       "created_at": "2026-07-20T10:00:00Z",
       "updated_at": "2026-07-20T10:00:08Z"
@@ -234,13 +230,13 @@ POST /v1/deployments/{id}/restart
 
 ```json
 {
-  "image": "ghcr.io/centralcorp/centralpanel:1.1.0"
+  "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.1.0"
 }
 ```
 
 Le dépôt doit rester celui autorisé. Si `docker.require_image_digest=true`, l'image doit contenir `@sha256:` suivi de 64 caractères hexadécimaux. Le déploiement doit être `active` ou `stopped` et l'image doit être différente de l'image actuelle.
 
-Déroulement : dump PostgreSQL chiffré, téléchargement de l'image, remplacement du conteneur, migrations, healthcheck, puis retour à l'état initial (`active` ou `stopped`). Si la nouvelle version échoue, l'agent restaure le dump et l'ancienne image. Il conserve au maximum deux dumps pendant sept jours.
+Déroulement : dump PostgreSQL chiffré, téléchargement de l'image, remplacement du conteneur, exécution sans shell de `panel.migration_command` (`php artisan migrate --force --no-interaction` par défaut), healthcheck, puis retour à l'état initial (`active` ou `stopped`). `auto:install` n'est pas utilisé pour migrer une installation existante. Si la nouvelle version échoue, l'agent restaure le dump et l'ancienne image. Il conserve au maximum deux dumps pendant sept jours.
 
 ## 8. Réinitialiser l'administrateur
 

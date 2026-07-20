@@ -41,6 +41,34 @@ panel:
 	}
 }
 
+func TestDefaultsMatchCentralPanelManagedContract(t *testing.T) {
+	c := Defaults()
+	if c.Docker.PanelImageRepository != "ghcr.io/centralcorp-cloud/centralpanel-cloud" {
+		t.Fatalf("unexpected panel repository: %q", c.Docker.PanelImageRepository)
+	}
+	wantInstall := []string{"php", "artisan", "auto:install", "--bootstrap-file=/run/secrets/panel_bootstrap.json", "--no-interaction"}
+	if len(c.Panel.InstallCommand) != len(wantInstall) {
+		t.Fatalf("unexpected install command: %#v", c.Panel.InstallCommand)
+	}
+	for i, want := range wantInstall {
+		if c.Panel.InstallCommand[i] != want {
+			t.Fatalf("install command[%d]=%q, want %q", i, c.Panel.InstallCommand[i], want)
+		}
+	}
+	wantMigration := []string{"php", "artisan", "migrate", "--force", "--no-interaction"}
+	if len(c.Panel.MigrationCommand) != len(wantMigration) {
+		t.Fatalf("unexpected migration command: %#v", c.Panel.MigrationCommand)
+	}
+	for i, want := range wantMigration {
+		if c.Panel.MigrationCommand[i] != want {
+			t.Fatalf("migration command[%d]=%q, want %q", i, c.Panel.MigrationCommand[i], want)
+		}
+	}
+	if len(c.Panel.AllowedEnvironmentKeys) != 0 {
+		t.Fatalf("custom environment allowlist should be empty by default: %#v", c.Panel.AllowedEnvironmentKeys)
+	}
+}
+
 func TestValidateRejectsInvalidNodeCIDRAndEnvironmentAllowlist(t *testing.T) {
 	c := Defaults()
 	c.Security.Mode = "token"
