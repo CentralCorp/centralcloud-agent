@@ -16,10 +16,10 @@ test:
 test-race:
 	$(GO_RUN) go test -race ./...
 build:
-	$(GO_RUN) go build -trimpath -ldflags="-X main.version=$(VERSION)" -o bin/centralcloud-agent ./cmd/agent
+	$(GO_RUN) go build -buildvcs=false -trimpath -ldflags="-X main.version=$(VERSION)" -o bin/centralcloud-agent ./cmd/agent
 build-all:
 	mkdir -p dist
-	$(GO_RUN) sh -c 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/centralcloud-agent-linux-amd64 ./cmd/agent && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/centralcloud-agent-linux-arm64 ./cmd/agent'
+	$(GO_RUN) sh -c 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o dist/centralcloud-agent-linux-amd64 ./cmd/agent && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -trimpath -o dist/centralcloud-agent-linux-arm64 ./cmd/agent'
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t centralcloud-node-agent:$(VERSION) .
 compose-up:

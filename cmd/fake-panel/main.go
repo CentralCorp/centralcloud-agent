@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -21,6 +22,16 @@ func main() {
 				os.Exit(1)
 			}
 			_ = r.Body.Close()
+			return
+		case "tcpcheck":
+			if len(os.Args) != 3 {
+				os.Exit(2)
+			}
+			connection, err := net.DialTimeout("tcp", os.Args[2], 2*time.Second)
+			if err != nil {
+				os.Exit(1)
+			}
+			_ = connection.Close()
 			return
 		}
 	}

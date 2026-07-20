@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
@@ -50,6 +51,9 @@ CREATE TABLE IF NOT EXISTS operation_steps(id INTEGER PRIMARY KEY AUTOINCREMENT,
 CREATE TABLE IF NOT EXISTS idempotency_keys(key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,response BLOB NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS purge_tokens(deployment_id TEXT NOT NULL,token_hash BLOB NOT NULL,expires_at TEXT NOT NULL,consumed_at TEXT,PRIMARY KEY(deployment_id,token_hash));
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,deployment_id TEXT NOT NULL,event TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL);`)
+	if err == nil {
+		_, err = s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)`)
+	}
 	if err == nil {
 		var count int
 		err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('deployments') WHERE name='encrypted_bootstrap'`).Scan(&count)
@@ -226,6 +230,30 @@ func (s *SQLite) CompleteOperation(ctx context.Context, id string, result []byte
 	}
 	return e
 }
+func (s *SQLite) CompletePurge(ctx context.Context, operationID, deploymentID string, result []byte) error {
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return e
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, e = tx.ExecContext(ctx, `UPDATE operations SET payload=NULL WHERE deployment_id=?`, deploymentID); e != nil {
+		return e
+	}
+	if _, e = tx.ExecContext(ctx, `DELETE FROM purge_tokens WHERE deployment_id=?`, deploymentID); e != nil {
+		return e
+	}
+	if _, e = tx.ExecContext(ctx, `DELETE FROM deployments WHERE deployment_id=?`, deploymentID); e != nil {
+		return e
+	}
+	r, e := tx.ExecContext(ctx, `UPDATE operations SET status='succeeded',result=?,updated_at=? WHERE operation_id=?`, result, s.clock.Now().Format(time.RFC3339Nano), operationID)
+	if e != nil {
+		return e
+	}
+	if n, _ := r.RowsAffected(); n != 1 {
+		return domain.ErrNotFound
+	}
+	return tx.Commit()
+}
 func (s *SQLite) FailOperation(ctx context.Context, id, code, message string) error {
 	_, e := s.db.ExecContext(ctx, `UPDATE operations SET status='failed',error_code=?,error_message=?,updated_at=? WHERE operation_id=?`, code, message, s.clock.Now().Format(time.RFC3339Nano), id)
 	return e
@@ -261,6 +289,33 @@ func (s *SQLite) ConsumePurgeToken(ctx context.Context, id string, hash []byte, 
 	}
 	n, e := r.RowsAffected()
 	return n == 1, e
+}
+func (s *SQLite) ResolveNodeID(ctx context.Context, configured, generated string) (string, error) {
+	configured = strings.ToLower(configured)
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return "", e
+	}
+	defer func() { _ = tx.Rollback() }()
+	var persisted string
+	e = tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='node_id'`).Scan(&persisted)
+	if errors.Is(e, sql.ErrNoRows) {
+		persisted = configured
+		if persisted == "" {
+			persisted = generated
+		}
+		if _, e = tx.ExecContext(ctx, `INSERT INTO metadata(key,value,updated_at) VALUES('node_id',?,?)`, persisted, s.clock.Now().Format(time.RFC3339Nano)); e != nil {
+			return "", e
+		}
+	} else if e != nil {
+		return "", e
+	} else if configured != "" && configured != persisted {
+		return "", fmt.Errorf("configured node.id does not match persisted node identity")
+	}
+	if e = tx.Commit(); e != nil {
+		return "", e
+	}
+	return persisted, nil
 }
 func isConstraint(e error) bool {
 	return e != nil && (contains(e.Error(), "constraint failed") || contains(e.Error(), "UNIQUE constraint"))

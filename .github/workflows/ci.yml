@@ -39,7 +39,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 1.26.5
-      - run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -o centralcloud-agent ./cmd/agent
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build -buildvcs=false -trimpath -o centralcloud-agent ./cmd/agent
 
   docker:
     runs-on: ubuntu-latest

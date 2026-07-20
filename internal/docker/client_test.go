@@ -17,6 +17,36 @@ func TestNetworkAddressPrefersConfiguredNetwork(t *testing.T) {
 	}
 }
 
+func TestDeploymentNetworkNamesAreDeterministicAndIsolated(t *testing.T) {
+	a, err := NetworkNames("123e4567-e89b-42d3-a456-426614174000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NetworkNames("123e4567-e89b-42d3-a456-426614174001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Frontend == b.Frontend || a.Backend == b.Backend || a.Frontend == a.Backend {
+		t.Fatalf("networks are not isolated: a=%+v b=%+v", a, b)
+	}
+	if a.Frontend != "centralcloud-fe-123e4567e89b42d3a456426614174000" {
+		t.Fatalf("unexpected deterministic name: %s", a.Frontend)
+	}
+}
+
+func TestValidateNetworkRequiresExactOwnership(t *testing.T) {
+	id := "123e4567-e89b-42d3-a456-426614174000"
+	names, _ := NetworkNames(id)
+	n := network.Inspect{Name: names.Frontend, Driver: "bridge", Internal: false, Labels: map[string]string{"centralcloud.managed": "true", "centralcloud.deployment_id": id, "centralcloud.network_role": "frontend"}}
+	if err := validateNetwork(n, names.Frontend, false, id, "frontend"); err != nil {
+		t.Fatal(err)
+	}
+	n.Labels["centralcloud.deployment_id"] = "123e4567-e89b-42d3-a456-426614174099"
+	if err := validateNetwork(n, names.Frontend, false, id, "frontend"); err == nil {
+		t.Fatal("foreign network ownership accepted")
+	}
+}
+
 func TestNetworkAddressFallbackIsDeterministic(t *testing.T) {
 	networks := map[string]*network.EndpointSettings{
 		"z-network": {IPAddress: "172.20.0.20"},

@@ -15,12 +15,13 @@ import (
 )
 
 type Collector struct {
-	path string
-	repo domain.StateRepository
+	path   string
+	repo   domain.StateRepository
+	nodeID string
 }
 
-func New(path string, repo domain.StateRepository) *Collector {
-	return &Collector{path: path, repo: repo}
+func New(path string, repo domain.StateRepository, nodeID string) *Collector {
+	return &Collector{path: path, repo: repo, nodeID: nodeID}
 }
 func (c *Collector) Collect(ctx context.Context) (contracts.ResourceResponse, error) {
 	total, avail, e := memory()
@@ -35,7 +36,7 @@ func (c *Collector) Collect(ctx context.Context) (contracts.ResourceResponse, er
 	if e != nil {
 		return contracts.ResourceResponse{}, e
 	}
-	return contracts.ResourceResponse{CPUCount: runtime.NumCPU(), MemoryTotalBytes: total, MemoryAvailableBytes: avail, DiskTotalBytes: diskBytes(st.Blocks, st.Bsize), DiskAvailableBytes: diskBytes(st.Bavail, st.Bsize), DeploymentCount: count, ActiveDeploymentCount: active}, nil
+	return contracts.ResourceResponse{NodeID: c.nodeID, CPUCount: runtime.NumCPU(), MemoryTotalBytes: total, MemoryAvailableBytes: avail, DiskTotalBytes: diskBytes(st.Blocks, st.Bsize), DiskAvailableBytes: diskBytes(st.Bavail, st.Bsize), DeploymentCount: count, ActiveDeploymentCount: active}, nil
 }
 func diskBytes(blocks uint64, size int64) int64 {
 	if size <= 0 || blocks == 0 {

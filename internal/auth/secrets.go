@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
 )
 
 type SecretStore struct {
@@ -72,7 +74,10 @@ func (s *SecretStore) Materialize(id, value string) (string, error) {
 	return s.MaterializeNamed(id, "postgres_password", value)
 }
 func (s *SecretStore) MaterializeNamed(id, name, value string) (string, error) {
-	dir := filepath.Join(s.runtimeDir, "deployments", id)
+	dir, e := s.deploymentDirectory(id)
+	if e != nil {
+		return "", e
+	}
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return "", e
 	}
@@ -89,12 +94,34 @@ func (s *SecretStore) RemoveNamed(id, name string) error {
 	if filepath.Base(name) != name || name == "." || name == "" {
 		return errors.New("invalid secret file name")
 	}
-	err := os.Remove(filepath.Join(s.runtimeDir, "deployments", id, name))
+	dir, e := s.deploymentDirectory(id)
+	if e != nil {
+		return e
+	}
+	err := os.Remove(filepath.Join(dir, name))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return err
 }
 func (s *SecretStore) Remove(id string) error {
-	return os.RemoveAll(filepath.Join(s.runtimeDir, "deployments", id))
+	dir, e := s.deploymentDirectory(id)
+	if e != nil {
+		return e
+	}
+	return os.RemoveAll(dir)
+}
+
+func (s *SecretStore) deploymentDirectory(id string) (string, error) {
+	id = strings.ToLower(id)
+	if e := domain.ValidateDeploymentID(id); e != nil {
+		return "", e
+	}
+	root := filepath.Clean(filepath.Join(s.runtimeDir, "deployments"))
+	dir := filepath.Join(root, id)
+	rel, e := filepath.Rel(root, dir)
+	if e != nil || rel != id {
+		return "", errors.New("deployment secret path escapes runtime directory")
+	}
+	return dir, nil
 }

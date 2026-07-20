@@ -26,21 +26,28 @@ type Operation struct {
 }
 
 type ContainerSpec struct {
-	Deployment                           contracts.CreateDeploymentRequest
-	Environment                          map[string]string
-	SecretFiles                          map[string]string
-	StorageDirectory                     string
-	ManagementLabels                     map[string]string
-	TraefikLabels                        map[string]string
-	FrontendNetwork, EgressNetwork, User string
-	PidsLimit                            int64
+	Deployment                            contracts.CreateDeploymentRequest
+	Environment                           map[string]string
+	SecretFiles                           map[string]string
+	StorageDirectory                      string
+	ManagementLabels                      map[string]string
+	TraefikLabels                         map[string]string
+	FrontendNetwork, BackendNetwork, User string
+	PidsLimit                             int64
+}
+
+type DeploymentNetworks struct {
+	Frontend       string
+	Backend        string
+	BackendGateway string
 }
 
 type ContainerInfo struct{ ID, Image, Status, Health, Address string }
 
 type DockerClient interface {
 	Ping(context.Context) error
-	EnsureNetwork(context.Context, string, bool) error
+	EnsureDeploymentNetworks(context.Context, string) (DeploymentNetworks, error)
+	RemoveDeploymentNetworks(context.Context, string) error
 	PullImage(context.Context, string) error
 	CreateContainer(context.Context, ContainerSpec) (string, error)
 	StartContainer(context.Context, string) error
@@ -70,12 +77,14 @@ type StateRepository interface {
 	GetOperation(context.Context, string) (Operation, error)
 	ClaimOperation(context.Context) (Operation, bool, error)
 	CompleteOperation(context.Context, string, []byte) error
+	CompletePurge(context.Context, string, string, []byte) error
 	FailOperation(context.Context, string, string, string) error
 	RecordStep(context.Context, string, string, string, string) error
 	GetIdempotency(context.Context, string) ([]byte, string, bool, error)
 	PutIdempotency(context.Context, string, string, []byte) error
 	CreatePurgeToken(context.Context, string, []byte, time.Time) error
 	ConsumePurgeToken(context.Context, string, []byte, time.Time) (bool, error)
+	ResolveNodeID(context.Context, string, string) (string, error)
 }
 
 type HealthChecker interface {
@@ -96,9 +105,17 @@ type ResourceCollector interface {
 	Collect(context.Context) (contracts.ResourceResponse, error)
 }
 type BackupManager interface {
-	Create(context.Context, Deployment, string) (string, error)
-	Restore(context.Context, Deployment, string, string) error
+	Create(context.Context, Deployment, string, DeploymentNetworks) (string, error)
+	Restore(context.Context, Deployment, string, string, DeploymentNetworks) error
 	Prune(context.Context, string, int, time.Duration) error
+	Purge(context.Context, string) error
+}
+
+type DeploymentStorage interface {
+	EnsurePanel(string) (string, error)
+	PurgePanel(string) error
+	EnsureBackup(string) (string, error)
+	PurgeBackups(string) error
 }
 type LogReader interface {
 	Read(context.Context, string, time.Time, int) ([]string, time.Time, error)

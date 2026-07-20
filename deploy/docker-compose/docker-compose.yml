@@ -20,6 +20,7 @@ services:
 
   traefik:
     image: traefik:v3.4
+    container_name: centralcloud-traefik
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -34,4 +35,3 @@ services:
 secrets:
   postgres_password:
     file: ../../secrets/postgres_password
-

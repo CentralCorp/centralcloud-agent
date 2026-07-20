@@ -14,8 +14,9 @@ func TestLabels(t *testing.T) {
 		t.Fatal(m)
 	}
 	c := config.Defaults()
-	tr := TraefikLabels(r, c)
-	if tr["traefik.enable"] != "true" || tr["traefik.docker.network"] != c.Docker.FrontendNetwork {
+	frontend := "centralcloud-fe-123e4567e89b42d3a456426614174000"
+	tr := TraefikLabels(r, c, frontend)
+	if tr["traefik.enable"] != "true" || tr["traefik.docker.network"] != frontend {
 		t.Fatal(tr)
 	}
 }

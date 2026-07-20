@@ -3,6 +3,8 @@ package fakes
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,8 +33,14 @@ type DockerClient struct {
 
 func (d *DockerClient) add(v string)               { d.mu.Lock(); defer d.mu.Unlock(); d.Calls = append(d.Calls, v) }
 func (d *DockerClient) Ping(context.Context) error { return nil }
-func (d *DockerClient) EnsureNetwork(_ context.Context, n string, i bool) error {
-	d.add("network:" + n)
+func (d *DockerClient) EnsureDeploymentNetworks(_ context.Context, id string) (domain.DeploymentNetworks, error) {
+	suffix := strings.ReplaceAll(id, "-", "")
+	n := domain.DeploymentNetworks{Frontend: "centralcloud-fe-" + suffix, Backend: "centralcloud-be-" + suffix, BackendGateway: "172.30.0.1"}
+	d.add("networks:ensure")
+	return n, nil
+}
+func (d *DockerClient) RemoveDeploymentNetworks(context.Context, string) error {
+	d.add("networks:remove")
 	return nil
 }
 func (d *DockerClient) PullImage(_ context.Context, i string) error { d.add("pull:" + i); return nil }
@@ -115,14 +123,29 @@ func (h *SequenceHealthChecker) Wait(context.Context, string, string, time.Durat
 
 type BackupManager struct{ Created, Restored, Pruned bool }
 
-func (b *BackupManager) Create(context.Context, domain.Deployment, string) (string, error) {
+func (b *BackupManager) Create(context.Context, domain.Deployment, string, domain.DeploymentNetworks) (string, error) {
 	b.Created = true
 	return "backup", nil
 }
-func (b *BackupManager) Restore(context.Context, domain.Deployment, string, string) error {
+func (b *BackupManager) Restore(context.Context, domain.Deployment, string, string, domain.DeploymentNetworks) error {
 	b.Restored = true
 	return nil
 }
+func (b *BackupManager) Purge(context.Context, string) error { return nil }
+
+type DeploymentStorage struct {
+	Root                       string
+	PanelPurged, BackupsPurged bool
+}
+
+func (s *DeploymentStorage) EnsurePanel(id string) (string, error) {
+	return filepath.Join(s.Root, "panels", id), nil
+}
+func (s *DeploymentStorage) PurgePanel(string) error { s.PanelPurged = true; return nil }
+func (s *DeploymentStorage) EnsureBackup(id string) (string, error) {
+	return filepath.Join(s.Root, "backups", id), nil
+}
+func (s *DeploymentStorage) PurgeBackups(string) error { s.BackupsPurged = true; return nil }
 func (b *BackupManager) Prune(context.Context, string, int, time.Duration) error {
 	b.Pruned = true
 	return nil
@@ -260,6 +283,16 @@ func (r *StateRepository) CompleteOperation(_ context.Context, id string, result
 	r.Operations[id] = o
 	return nil
 }
+func (r *StateRepository) CompletePurge(_ context.Context, operationID, deploymentID string, result []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.Deployments, deploymentID)
+	o := r.Operations[operationID]
+	o.Status = "succeeded"
+	o.Result = result
+	r.Operations[operationID] = o
+	return nil
+}
 func (r *StateRepository) FailOperation(_ context.Context, id, code, message string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -294,6 +327,12 @@ func (r *StateRepository) CreatePurgeToken(context.Context, string, []byte, time
 }
 func (r *StateRepository) ConsumePurgeToken(context.Context, string, []byte, time.Time) (bool, error) {
 	return true, nil
+}
+func (r *StateRepository) ResolveNodeID(_ context.Context, configured, generated string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	return generated, nil
 }
 
 var _ = errors.New

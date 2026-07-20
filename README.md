@@ -9,6 +9,8 @@ Agent système Go installé sur chaque VPS CentralCloud. Il reçoit les ordres d
 - Mutations protégées par `Idempotency-Key`, `X-Correlation-ID` et `X-Request-Timestamp`.
 - Secrets PostgreSQL générés par l’agent, chiffrés AES-256-GCM au repos et montés en fichier `0400`; aucun mot de passe n’est renvoyé.
 - Conteneurs non privilégiés, sans port hôte ni socket Docker, capacités supprimées, rootfs read-only, tmpfs, limites CPU/RAM/PID et `no-new-privileges`.
+- Deux réseaux Docker propriétaires par déploiement ; aucun réseau panel-à-panel partagé, Traefik rejoint uniquement chaque frontend nécessaire.
+- Stockage persistant marqué et supprimable uniquement après validation stricte du chemin et de la propriété.
 - Logs JSON structurés et nettoyage des mots de passe, tokens, DSN et en-têtes sensibles.
 
 L’accès au socket Docker confère des privilèges équivalents à root. Le compte système dédié doit donc être traité comme un compte privilégié du nœud et l’API ne doit jamais être exposée publiquement.
@@ -36,7 +38,7 @@ chown root:centralcloud-agent /etc/centralcloud-agent/secrets/*
 chmod 0640 /etc/centralcloud-agent/secrets/*
 ```
 
-La clé maître décodée doit faire exactement 32 octets. En mode développement, créer également `api_token` avec au moins 32 caractères. Les variables documentées `CENTRALCLOUD_*` peuvent remplacer l’adresse, le mode, les chemins TLS/secrets, le socket, le fichier SQLite et la capacité maximale; elles ne transportent jamais directement un secret.
+La clé maître décodée doit faire exactement 32 octets. En mode développement, créer également `api_token` avec au moins 32 caractères. Configurer `node.id`/`node.name`, `traefik.container_name`, l'allowlist `panel.allowed_environment_keys` et, en production, `docker.require_image_digest: true`. Si `node.id` est omis, il est généré une seule fois dans SQLite. Les variables documentées `CENTRALCLOUD_*` ne transportent jamais directement un secret.
 
 L’image CentralPanel doit :
 
@@ -44,6 +46,8 @@ L’image CentralPanel doit :
 - fonctionner avec l’utilisateur configuré et un rootfs read-only;
 - accepter `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` et `PGPASSWORD_FILE`;
 - fournir la commande `panel.migration_command` sous forme d’arguments, sans shell.
+
+Les panels utilisent `centralcloud-fe-<deployment_id>` pour Traefik et un backend `Internal` distinct pour PostgreSQL. `postgres.host` sert à l'agent ; les panels utilisent `postgres.panel_host` ou, par défaut, la gateway de leur backend. PostgreSQL et son `pg_hba.conf` doivent accepter uniquement les bridges nécessaires et ne jamais être exposés publiquement.
 
 ## Installation systemd
 
@@ -91,7 +95,9 @@ curl -sS http://127.0.0.1:9443/v1/deployments \
   --data @deploy/examples/create-deployment.json
 ```
 
-Pour une purge, demander d’abord un jeton, puis envoyer `X-Purge-Token` avec `DELETE ...?mode=purge`. Le jeton expire après cinq minutes et n’est utilisable qu’une fois. Une suppression soft conserve base, rôle et secret et permet une recréation avec le même ID.
+Pour une purge, demander d’abord un jeton, puis envoyer `X-Purge-Token` avec `DELETE ...?mode=purge`. Le jeton expire après cinq minutes et n’est utilisable qu’une fois. Une suppression soft conserve base, rôle, secrets chiffrés et stockage ; la purge retire aussi réseaux, PostgreSQL, stockage, backups et état principal SQLite.
+
+Les réponses `/v1/health` et `/v1/resources` contiennent `node_id`; la santé expose aussi `node_name` et `agent_version`. Le Control Plane les sonde périodiquement et reste seul responsable du choix du node.
 
 ## Développement et tests isolés
 
@@ -108,3 +114,5 @@ Le Compose de test publie PostgreSQL et Traefik uniquement sur loopback et utili
 ## Reprise et opérations
 
 SQLite fonctionne en WAL et stocke déploiements, opérations, étapes et réponses idempotentes. Au redémarrage, une opération restée `running` est remise en file et chaque étape externe est rejouée idempotemment. Un upgrade crée un dump logique chiffré via un conteneur PostgreSQL utilitaire, conserve deux dumps pendant sept jours et restaure base et ancienne image si le nouveau healthcheck échoue.
+
+Les anciens panels utilisant les réseaux partagés doivent être migrés de façon contrôlée par soft delete puis recreate avec le même `deployment_id`. Cette opération préserve PostgreSQL et `/app/storage`. La V1 reste locale au node : sauvegarder extérieurement PostgreSQL, les panels, `state.db`, la configuration et la clé maître séparée.

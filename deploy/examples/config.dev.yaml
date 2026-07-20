@@ -1,14 +1,17 @@
+node:
+  id: "123e4567-e89b-42d3-a456-426614174010"
+  name: "node-dev-01"
 server:
   address: "127.0.0.1:9443"
 security:
   mode: "token"
   token_file: "/etc/centralcloud-agent/secrets/api_token"
   master_key_file: "/etc/centralcloud-agent/secrets/master.key"
+  allowed_source_cidrs: []
 docker:
   socket: "unix:///var/run/docker.sock"
-  frontend_network: "centralcloud_frontend"
-  egress_network: "centralcloud_egress"
   panel_image_repository: "ghcr.io/centralcorp/centralpanel"
+  require_image_digest: false
   panel_user: "10001:10001"
   pids_limit: 256
 postgres:
@@ -18,14 +21,18 @@ postgres:
   administrator_username: "centralcloud_provisioner"
   administrator_password_file: "/etc/centralcloud-agent/secrets/postgres_password"
   backup_image: "postgres:17-alpine"
+  panel_host: ""
 traefik:
+  container_name: "centralcloud-traefik"
   domain_suffix: "cloud.centralcorp.fr"
   entrypoint: "websecure"
   certificate_resolver: "letsencrypt"
 panel:
+  allowed_environment_keys: ["APP_ENV", "CENTRALPANEL_MODE", "CLOUD_PROJECT_ID"]
   migration_command: ["php", "artisan", "panel:install", "--no-interaction"]
   admin_reset_command: ["php", "artisan", "panel:admin-reset", "--bootstrap-file=/run/secrets/panel_admin_reset.json", "--no-interaction"]
 storage:
   database_file: "/var/lib/centralcloud-agent/state.db"
   runtime_directory: "/run/centralcloud-agent"
   backup_directory: "/var/lib/centralcloud-agent/backups"
+  panel_directory: "/var/lib/centralcloud-agent/panels"

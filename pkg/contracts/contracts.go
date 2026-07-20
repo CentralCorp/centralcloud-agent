@@ -79,21 +79,25 @@ type Deployment struct {
 }
 
 type HealthResponse struct {
-	Status   string `json:"status"`
-	Version  string `json:"version"`
-	Docker   string `json:"docker"`
-	Postgres string `json:"postgres"`
-	Database string `json:"database"`
+	NodeID       string `json:"node_id"`
+	NodeName     string `json:"node_name"`
+	AgentVersion string `json:"agent_version"`
+	Status       string `json:"status"`
+	Version      string `json:"version"`
+	Docker       string `json:"docker"`
+	Postgres     string `json:"postgres"`
+	Database     string `json:"database"`
 }
 
 type ResourceResponse struct {
-	CPUCount              int   `json:"cpu_count"`
-	MemoryTotalBytes      int64 `json:"memory_total_bytes"`
-	MemoryAvailableBytes  int64 `json:"memory_available_bytes"`
-	DiskTotalBytes        int64 `json:"disk_total_bytes"`
-	DiskAvailableBytes    int64 `json:"disk_available_bytes"`
-	DeploymentCount       int   `json:"deployment_count"`
-	ActiveDeploymentCount int   `json:"active_deployment_count"`
+	NodeID                string `json:"node_id"`
+	CPUCount              int    `json:"cpu_count"`
+	MemoryTotalBytes      int64  `json:"memory_total_bytes"`
+	MemoryAvailableBytes  int64  `json:"memory_available_bytes"`
+	DiskTotalBytes        int64  `json:"disk_total_bytes"`
+	DiskAvailableBytes    int64  `json:"disk_available_bytes"`
+	DeploymentCount       int    `json:"deployment_count"`
+	ActiveDeploymentCount int    `json:"active_deployment_count"`
 }
 
 type ErrorBody struct {

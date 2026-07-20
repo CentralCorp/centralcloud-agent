@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func TestSimulatedProvisioning(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := ccmetrics.New(reg)
 	resourceFake := &fakes.ResourceCollector{Value: contracts.ResourceResponse{MemoryAvailableBytes: 1 << 30}}
-	svc := New(c, repo, docker, pg, &fakes.HealthChecker{}, secrets, &fakes.BackupManager{}, resourceFake, ids, clock, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
+	svc := New(c, repo, docker, pg, &fakes.HealthChecker{}, secrets, &fakes.BackupManager{}, &fakes.DeploymentStorage{Root: dir}, resourceFake, ids, clock, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
 	req := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:1.0.0", Environment: map[string]string{"APP_ENV": "production"}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/health"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
 	raw, _ := json.Marshal(req)
 	if _, e = svc.SubmitCreate(context.Background(), req, "123e4567-e89b-42d3-a456-426614174010", "POST", "/v1/deployments", raw); e != nil {
@@ -121,7 +122,7 @@ func TestMaterializeSecretsAdaptsBootstrapForPanelInstaller(t *testing.T) {
 	}
 }
 
-func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fakes.StateRepository, *fakes.DockerClient, *fakes.PostgresProvisioner, *fakes.BackupManager, domain.Deployment) {
+func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fakes.StateRepository, *fakes.DockerClient, *fakes.PostgresProvisioner, *fakes.BackupManager, *fakes.DeploymentStorage, domain.Deployment) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "key"), []byte(base64.StdEncoding.EncodeToString(make([]byte, 32))), 0600); err != nil {
@@ -150,13 +151,14 @@ func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fak
 	backups := &fakes.BackupManager{}
 	m := ccmetrics.New(prometheus.NewRegistry())
 	resources := &fakes.ResourceCollector{Value: contracts.ResourceResponse{MemoryAvailableBytes: 1 << 30}}
-	svc := New(c, repo, docker, pg, health, secrets, backups, resources, &fakes.IDGenerator{Value: "123e4567-e89b-42d3-a456-426614174099"}, &fakes.Clock{Time: time.Now().UTC()}, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
-	return svc, repo, docker, pg, backups, d
+	localData := &fakes.DeploymentStorage{Root: dir}
+	svc := New(c, repo, docker, pg, health, secrets, backups, localData, resources, &fakes.IDGenerator{Value: "123e4567-e89b-42d3-a456-426614174099"}, &fakes.Clock{Time: time.Now().UTC()}, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
+	return svc, repo, docker, pg, backups, localData, d
 }
 
 func TestUpgradeRollsBackImageAndDatabaseOnHealthFailure(t *testing.T) {
 	health := &fakes.SequenceHealthChecker{Errors: []error{errors.New("new image unhealthy"), nil}}
-	svc, repo, _, _, backups, d := lifecycleService(t, health)
+	svc, repo, _, _, backups, localData, d := lifecycleService(t, health)
 	payload, _ := json.Marshal(contracts.UpgradeRequest{Image: "ghcr.io/centralcorp/centralpanel:2.0.0"})
 	err := svc.upgrade(context.Background(), domain.Operation{ID: "upgrade", DeploymentID: d.Request.DeploymentID, Type: OpUpgrade, Payload: payload})
 	var rolledBack *rollbackError
@@ -167,16 +169,37 @@ func TestUpgradeRollsBackImageAndDatabaseOnHealthFailure(t *testing.T) {
 	if got.State != domain.StateActive || got.Request.Image != d.Request.Image || !backups.Created || !backups.Restored {
 		t.Fatalf("rollback incomplete: state=%s image=%s backups=%+v", got.State, got.Request.Image, backups)
 	}
+	if localData.PanelPurged {
+		t.Fatal("upgrade purged persistent panel storage")
+	}
+}
+
+func TestSubmitUpgradeAppliesDigestPolicy(t *testing.T) {
+	svc, _, _, _, _, _, d := lifecycleService(t, &fakes.HealthChecker{})
+	svc.cfg.Docker.RequireImageDigest = true
+	tagged := contracts.UpgradeRequest{Image: "ghcr.io/centralcorp/centralpanel:2.0.0"}
+	raw, _ := json.Marshal(tagged)
+	if _, err := svc.SubmitUpgrade(context.Background(), d.Request.DeploymentID, "123e4567-e89b-42d3-a456-426614174051", "POST", "/upgrade", tagged, raw); err == nil {
+		t.Fatal("mutable upgrade tag accepted while digest policy enabled")
+	}
+	digested := contracts.UpgradeRequest{Image: "ghcr.io/centralcorp/centralpanel@sha256:" + strings.Repeat("a", 64)}
+	raw, _ = json.Marshal(digested)
+	if _, err := svc.SubmitUpgrade(context.Background(), d.Request.DeploymentID, "123e4567-e89b-42d3-a456-426614174052", "POST", "/upgrade", digested, raw); err != nil {
+		t.Fatalf("digest upgrade rejected: %v", err)
+	}
 }
 
 func TestSoftDeletePreservesDatabaseAndPurgeRemovesIt(t *testing.T) {
-	svc, repo, _, pg, _, d := lifecycleService(t, &fakes.HealthChecker{})
+	svc, repo, _, pg, _, localData, d := lifecycleService(t, &fakes.HealthChecker{})
 	if err := svc.remove(context.Background(), domain.Operation{ID: "soft", DeploymentID: d.Request.DeploymentID}, false); err != nil {
 		t.Fatal(err)
 	}
 	soft, _ := repo.GetDeployment(context.Background(), d.Request.DeploymentID)
 	if soft.State != domain.StateDeleted || soft.CredentialsRef == "" || pg.Dropped {
 		t.Fatalf("soft delete lost data: %+v", soft)
+	}
+	if localData.PanelPurged {
+		t.Fatal("soft delete purged persistent storage")
 	}
 	soft.State = domain.StateActive
 	if err := repo.SaveDeployment(context.Background(), soft); err != nil {
@@ -185,14 +208,42 @@ func TestSoftDeletePreservesDatabaseAndPurgeRemovesIt(t *testing.T) {
 	if err := svc.remove(context.Background(), domain.Operation{ID: "purge", DeploymentID: d.Request.DeploymentID}, true); err != nil {
 		t.Fatal(err)
 	}
-	purged, _ := repo.GetDeployment(context.Background(), d.Request.DeploymentID)
-	if !pg.Dropped || purged.CredentialsRef != "" || len(purged.EncryptedSecret) != 0 {
-		t.Fatalf("purge incomplete: %+v", purged)
+	if !pg.Dropped {
+		t.Fatal("PostgreSQL material was not purged")
+	}
+	if !localData.PanelPurged {
+		t.Fatal("purge did not delete persistent storage")
+	}
+	if err := svc.remove(context.Background(), domain.Operation{ID: "purge-replay", DeploymentID: d.Request.DeploymentID}, true); err != nil {
+		t.Fatalf("partially completed purge was not replayable: %v", err)
+	}
+	if err := repo.CompletePurge(context.Background(), "purge", d.Request.DeploymentID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetDeployment(context.Background(), d.Request.DeploymentID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("purged deployment remains in state: %v", err)
+	}
+}
+
+func TestStopAndStartPreservePersistentStorage(t *testing.T) {
+	svc, repo, _, _, _, localData, d := lifecycleService(t, &fakes.HealthChecker{})
+	if err := svc.stop(context.Background(), domain.Operation{ID: "stop", DeploymentID: d.Request.DeploymentID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.start(context.Background(), domain.Operation{ID: "start", DeploymentID: d.Request.DeploymentID}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetDeployment(context.Background(), d.Request.DeploymentID)
+	if err != nil || got.State != domain.StateActive {
+		t.Fatalf("state=%s err=%v", got.State, err)
+	}
+	if localData.PanelPurged {
+		t.Fatal("stop/start purged persistent storage")
 	}
 }
 
 func TestAdminResetPayloadIsEncryptedAndExecuted(t *testing.T) {
-	svc, repo, docker, _, _, d := lifecycleService(t, &fakes.HealthChecker{})
+	svc, repo, docker, _, _, _, d := lifecycleService(t, &fakes.HealthChecker{})
 	req := contracts.AdminResetRequest{AdminEmail: "owner@example.test", AdminPassword: "rotated-admin-password"}
 	raw, _ := json.Marshal(req)
 	operationID := "123e4567-e89b-42d3-a456-426614174099"

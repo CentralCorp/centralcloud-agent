@@ -36,12 +36,16 @@ func TestSecretRoundTrip(t *testing.T) {
 	if e != nil || got != secret {
 		t.Fatalf("roundtrip: %q %v", got, e)
 	}
-	p, e := s.Materialize("deployment", secret)
+	id := "123e4567-e89b-42d3-a456-426614174000"
+	p, e := s.Materialize(id, secret)
 	if e != nil {
 		t.Fatal(e)
 	}
 	info, _ := os.Stat(p)
 	if info.Mode().Perm() != 0400 {
 		t.Fatalf("mode=%o", info.Mode().Perm())
+	}
+	if e = s.Remove("../outside"); e == nil {
+		t.Fatal("unsafe deployment secret path accepted")
 	}
 }

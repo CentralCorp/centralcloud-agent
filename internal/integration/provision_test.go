@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
 	"github.com/centralcorp/centralcloud-node-agent/internal/postgres"
 	"github.com/centralcorp/centralcloud-node-agent/pkg/contracts"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 )
 
@@ -28,10 +30,9 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	c.Postgres.Host = "127.0.0.1"
 	c.Postgres.AdministratorUsername = "centralcloud_provisioner"
 	c.Postgres.AdministratorPasswordFile = os.Getenv("CENTRALCLOUD_POSTGRES_PASSWORD_FILE")
-	c.Docker.FrontendNetwork = "centralcloud_it_frontend"
-	c.Docker.EgressNetwork = "centralcloud_it_egress"
 	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
-	d, err := ccdocker.New(c.Docker.Socket, "", "")
+	c.Traefik.ContainerName = "centralcloud-traefik"
+	d, err := ccdocker.New(c.Docker.Socket, "", "", c.Traefik.ContainerName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,18 +48,17 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	if err = pg.EnsureRoleAndDatabase(ctx, db, user, password, id); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.EnsureNetwork(ctx, c.Docker.FrontendNetwork, false); err != nil {
+	networks, err := d.EnsureDeploymentNetworks(ctx, id)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = d.EnsureNetwork(ctx, c.Docker.EgressNetwork, true); err != nil {
-		t.Fatal(err)
-	}
+	defer d.RemoveDeploymentNetworks(context.Background(), id)
 	secret := filepath.Join(t.TempDir(), "postgres_password")
 	if err = os.WriteFile(secret, []byte(password), 0400); err != nil {
 		t.Fatal(err)
 	}
 	r := contracts.CreateDeploymentRequest{DeploymentID: id, ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "integration.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp/centralpanel:integration", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: db, Username: user}, Healthcheck: contracts.Healthcheck{Path: "/health", TimeoutSeconds: 30}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
-	spec := domain.ContainerSpec{Deployment: r, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(r), TraefikLabels: deployment.TraefikLabels(r, c), FrontendNetwork: c.Docker.FrontendNetwork, EgressNetwork: c.Docker.EgressNetwork, User: "65532:65532", PidsLimit: 64}
+	spec := domain.ContainerSpec{Deployment: r, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(r), TraefikLabels: deployment.TraefikLabels(r, c, networks.Frontend), FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: "65532:65532", PidsLimit: 64}
 	containerID, err := d.CreateContainer(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +89,47 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	}
 	if inspected.Config.Labels["centralcloud.deployment_id"] != id || inspected.Config.Labels["traefik.enable"] != "true" {
 		t.Fatalf("missing labels: %#v", inspected.Config.Labels)
+	}
+	frontend, err := raw.NetworkInspect(ctx, networks.Frontend, network.InspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := raw.NetworkInspect(ctx, networks.Backend, network.InspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inspectedNetwork := range []network.Inspect{frontend, backend} {
+		if inspectedNetwork.Labels["centralcloud.managed"] != "true" || inspectedNetwork.Labels["centralcloud.deployment_id"] != id {
+			t.Fatalf("missing network ownership labels: %#v", inspectedNetwork.Labels)
+		}
+	}
+	secondID := "123e4567-e89b-42d3-a456-426614174098"
+	secondNetworks, err := d.EnsureDeploymentNetworks(ctx, secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.RemoveDeploymentNetworks(context.Background(), secondID)
+	secondRequest := r
+	secondRequest.DeploymentID = secondID
+	secondRequest.ProjectID = "123e4567-e89b-42d3-a456-426614174097"
+	secondRequest.Hostname = "integration-second.cloud.centralcorp.fr"
+	secondSpec := domain.ContainerSpec{Deployment: secondRequest, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(secondRequest), TraefikLabels: deployment.TraefikLabels(secondRequest, c, secondNetworks.Frontend), FrontendNetwork: secondNetworks.Frontend, BackendNetwork: secondNetworks.Backend, User: "65532:65532", PidsLimit: 64}
+	if _, err = d.CreateContainer(ctx, secondSpec); err != nil {
+		t.Fatal(err)
+	}
+	defer d.RemoveContainer(context.Background(), secondID)
+	if err = d.StartContainer(ctx, secondID); err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := d.InspectDeployment(ctx, secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if networks.Frontend == secondNetworks.Frontend || networks.Backend == secondNetworks.Backend {
+		t.Fatal("two deployments share a managed network")
+	}
+	if err = d.Exec(ctx, id, []string{"/fake-panel", "tcpcheck", net.JoinHostPort(secondInfo.Address, "8080")}); err == nil {
+		t.Fatal("panel A could contact panel B directly across isolated backend networks")
 	}
 	if len(inspected.HostConfig.PortBindings) != 0 || inspected.HostConfig.Memory != 128<<20 || inspected.HostConfig.NanoCPUs != 250000000 {
 		t.Fatal("container exposure or limits are incorrect")

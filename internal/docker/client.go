@@ -28,20 +28,17 @@ import (
 )
 
 type Client struct {
-	cli              *client.Client
-	registryAuth     string
-	preferredNetwork string
+	cli          *client.Client
+	registryAuth string
+	traefikName  string
 }
 
-func New(socket, usernameFile, tokenFile string, preferredNetwork ...string) (*Client, error) {
+func New(socket, usernameFile, tokenFile, traefikName string) (*Client, error) {
 	c, e := client.NewClientWithOpts(client.WithHost(socket), client.WithAPIVersionNegotiation())
 	if e != nil {
 		return nil, e
 	}
-	result := &Client{cli: c}
-	if len(preferredNetwork) > 0 {
-		result.preferredNetwork = preferredNetwork[0]
-	}
+	result := &Client{cli: c, traefikName: traefikName}
 	if usernameFile != "" && tokenFile != "" {
 		username, err := os.ReadFile(usernameFile) // #nosec G304 -- configured secret path.
 		if err != nil {
@@ -61,19 +58,134 @@ func New(socket, usernameFile, tokenFile string, preferredNetwork ...string) (*C
 }
 func (c *Client) Close() error                   { return c.cli.Close() }
 func (c *Client) Ping(ctx context.Context) error { _, e := c.cli.Ping(ctx); return e }
-func (c *Client) EnsureNetwork(ctx context.Context, name string, internal bool) error {
+func NetworkNames(id string) (domain.DeploymentNetworks, error) {
+	if e := domain.ValidateDeploymentID(id); e != nil {
+		return domain.DeploymentNetworks{}, e
+	}
+	suffix := strings.ReplaceAll(strings.ToLower(id), "-", "")
+	return domain.DeploymentNetworks{Frontend: "centralcloud-fe-" + suffix, Backend: "centralcloud-be-" + suffix}, nil
+}
+
+func (c *Client) EnsureDeploymentNetworks(ctx context.Context, id string) (domain.DeploymentNetworks, error) {
+	names, e := NetworkNames(id)
+	if e != nil {
+		return names, e
+	}
+	frontend, e := c.ensureNetwork(ctx, names.Frontend, false, id, "frontend")
+	if e != nil {
+		return names, e
+	}
+	backend, e := c.ensureNetwork(ctx, names.Backend, true, id, "backend")
+	if e != nil {
+		return names, e
+	}
+	if e = c.connectTraefik(ctx, frontend); e != nil {
+		return names, e
+	}
+	for _, cfg := range backend.IPAM.Config {
+		if cfg.Gateway != "" {
+			names.BackendGateway = cfg.Gateway
+			break
+		}
+	}
+	if names.BackendGateway == "" {
+		return names, fmt.Errorf("backend network %s has no gateway", names.Backend)
+	}
+	return names, nil
+}
+
+func (c *Client) ensureNetwork(ctx context.Context, name string, internal bool, id, role string) (network.Inspect, error) {
 	n, e := c.cli.NetworkInspect(ctx, name, network.InspectOptions{})
 	if e == nil {
-		if n.Internal != internal {
-			return fmt.Errorf("network %s exists with incompatible Internal setting", name)
-		}
-		return nil
+		return n, validateNetwork(n, name, internal, id, role)
 	}
 	if !client.IsErrNotFound(e) {
+		return network.Inspect{}, e
+	}
+	labels := map[string]string{"centralcloud.managed": "true", "centralcloud.deployment_id": strings.ToLower(id), "centralcloud.network_role": role}
+	if _, e = c.cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge", Internal: internal, Labels: labels}); e != nil {
+		return network.Inspect{}, e
+	}
+	n, e = c.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if e != nil {
+		return network.Inspect{}, e
+	}
+	return n, validateNetwork(n, name, internal, id, role)
+}
+
+func validateNetwork(n network.Inspect, name string, internal bool, id, role string) error {
+	if n.Name != name || n.Driver != "bridge" || n.Internal != internal || n.Labels["centralcloud.managed"] != "true" || n.Labels["centralcloud.deployment_id"] != strings.ToLower(id) || n.Labels["centralcloud.network_role"] != role {
+		return fmt.Errorf("refusing incompatible or unowned network %s", name)
+	}
+	return nil
+}
+
+func (c *Client) connectTraefik(ctx context.Context, frontend network.Inspect) error {
+	if c.traefikName == "" {
+		return errors.New("traefik container name is not configured")
+	}
+	traefik, e := c.cli.ContainerInspect(ctx, c.traefikName)
+	if e != nil {
+		return fmt.Errorf("inspect Traefik container %s: %w", c.traefikName, e)
+	}
+	if _, ok := frontend.Containers[traefik.ID]; ok {
+		return nil
+	}
+	if e = c.cli.NetworkConnect(ctx, frontend.ID, traefik.ID, nil); e != nil {
+		return fmt.Errorf("connect Traefik to network %s: %w", frontend.Name, e)
+	}
+	return nil
+}
+
+func (c *Client) RemoveDeploymentNetworks(ctx context.Context, id string) error {
+	names, e := NetworkNames(id)
+	if e != nil {
 		return e
 	}
-	_, e = c.cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge", Internal: internal, Labels: map[string]string{"centralcloud.managed": "true"}})
-	return e
+	frontend, frontendExists, e := c.inspectOwnedNetwork(ctx, names.Frontend, false, id, "frontend")
+	if e != nil {
+		return e
+	}
+	backend, backendExists, e := c.inspectOwnedNetwork(ctx, names.Backend, true, id, "backend")
+	if e != nil {
+		return e
+	}
+	if frontendExists {
+		traefik, inspectErr := c.cli.ContainerInspect(ctx, c.traefikName)
+		if inspectErr != nil && !client.IsErrNotFound(inspectErr) {
+			return inspectErr
+		}
+		if inspectErr == nil {
+			if _, ok := frontend.Containers[traefik.ID]; ok {
+				if e = c.cli.NetworkDisconnect(ctx, frontend.ID, traefik.ID, false); e != nil {
+					return fmt.Errorf("disconnect Traefik from network %s: %w", frontend.Name, e)
+				}
+			}
+		}
+		if e = c.cli.NetworkRemove(ctx, frontend.ID); e != nil && !client.IsErrNotFound(e) {
+			return e
+		}
+	}
+	if backendExists {
+		if e = c.cli.NetworkRemove(ctx, backend.ID); e != nil && !client.IsErrNotFound(e) {
+			return e
+		}
+	}
+	return nil
+}
+
+func (c *Client) inspectOwnedNetwork(ctx context.Context, name string, internal bool, id, role string) (network.Inspect, bool, error) {
+	n, e := c.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if client.IsErrNotFound(e) {
+		return network.Inspect{}, false, nil
+	}
+	if e != nil {
+		return network.Inspect{}, false, e
+	}
+	if e = validateNetwork(n, name, internal, id, role); e != nil {
+		return network.Inspect{}, false, e
+	}
+	return n, true, nil
 }
 func (c *Client) PullImage(ctx context.Context, ref string) error {
 	if _, _, e := c.cli.ImageInspectWithRaw(ctx, ref); e == nil {
@@ -97,9 +209,6 @@ func (c *Client) CreateContainer(ctx context.Context, s domain.ContainerSpec) (s
 		return old.ID, nil
 	} else if !errors.Is(e, domain.ErrNotFound) {
 		return "", e
-	}
-	if e := os.MkdirAll(s.StorageDirectory, 0700); e != nil {
-		return "", fmt.Errorf("create panel storage: %w", e)
 	}
 	env := make([]string, 0, len(s.Environment))
 	for k, v := range s.Environment {
@@ -138,7 +247,7 @@ func (c *Client) CreateContainer(ctx context.Context, s domain.ContainerSpec) (s
 		Resources: container.Resources{Memory: s.Deployment.Resources.MemoryBytes, NanoCPUs: int64(s.Deployment.Resources.CPULimit * 1e9), PidsLimit: &pids},
 		Tmpfs:     map[string]string{"/tmp": "rw,noexec,nosuid,size=64m", "/run": "rw,noexec,nosuid,size=16m"},
 		Binds:     binds, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyOnFailure, MaximumRetryCount: 3},
-	}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{s.FrontendNetwork: {}, s.EgressNetwork: {}}}, nil, name)
+	}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{s.FrontendNetwork: {}, s.BackendNetwork: {}}}, nil, name)
 	return resp.ID, e
 }
 func (c *Client) find(ctx context.Context, id string) (types.Container, error) {
@@ -196,7 +305,8 @@ func (c *Client) InspectDeployment(ctx context.Context, id string) (domain.Conta
 	if i.State != nil && i.State.Health != nil {
 		health = i.State.Health.Status
 	}
-	address := networkAddress(i.NetworkSettings.Networks, c.preferredNetwork)
+	names, _ := NetworkNames(id)
+	address := networkAddress(i.NetworkSettings.Networks, names.Backend)
 	return domain.ContainerInfo{ID: f.ID, Image: i.Config.Image, Status: i.State.Status, Health: health, Address: address}, nil
 }
 

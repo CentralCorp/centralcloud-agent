@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +40,7 @@ type Service struct {
 	health    domain.HealthChecker
 	secrets   domain.SecretStore
 	backups   domain.BackupManager
+	storage   domain.DeploymentStorage
 	resources domain.ResourceCollector
 	ids       domain.IDGenerator
 	clock     domain.Clock
@@ -93,8 +93,8 @@ func (s *Service) decryptPermanentSecrets(encrypted []byte) (permanentSecrets, e
 	return permanentSecrets{DatabasePassword: value}, nil
 }
 
-func New(c config.Config, r domain.StateRepository, d domain.DockerClient, p domain.PostgresProvisioner, h domain.HealthChecker, secrets domain.SecretStore, b domain.BackupManager, resources domain.ResourceCollector, ids domain.IDGenerator, clock domain.Clock, log *slog.Logger, m *ccmetrics.Metrics) *Service {
-	return &Service{cfg: c, repo: r, docker: d, postgres: p, health: h, secrets: secrets, backups: b, resources: resources, ids: ids, clock: clock, log: log, metrics: m, wake: make(chan struct{}, 1)}
+func New(c config.Config, r domain.StateRepository, d domain.DockerClient, p domain.PostgresProvisioner, h domain.HealthChecker, secrets domain.SecretStore, b domain.BackupManager, storage domain.DeploymentStorage, resources domain.ResourceCollector, ids domain.IDGenerator, clock domain.Clock, log *slog.Logger, m *ccmetrics.Metrics) *Service {
+	return &Service{cfg: c, repo: r, docker: d, postgres: p, health: h, secrets: secrets, backups: b, storage: storage, resources: resources, ids: ids, clock: clock, log: log, metrics: m, wake: make(chan struct{}, 1)}
 }
 
 func hashRequest(method, path string, body []byte) string {
@@ -230,6 +230,13 @@ func (s *Service) Submit(ctx context.Context, typ, id, key, method, path string,
 	return response, e
 }
 
+func (s *Service) SubmitUpgrade(ctx context.Context, id, key, method, path string, request contracts.UpgradeRequest, raw []byte) ([]byte, error) {
+	if e := domain.ValidatePanelImage(request.Image, s.cfg); e != nil {
+		return nil, e
+	}
+	return s.Submit(ctx, OpUpgrade, id, key, method, path, raw)
+}
+
 func (s *Service) SubmitAdminReset(ctx context.Context, id, key, method, path string, request contracts.AdminResetRequest, raw []byte) ([]byte, error) {
 	if !strings.Contains(request.AdminEmail, "@") || len(request.AdminPassword) < 12 || len(request.AdminPassword) > 4096 {
 		return nil, fmt.Errorf("valid admin_email and a password of at least 12 characters are required")
@@ -362,7 +369,11 @@ func (s *Service) process(parent context.Context, o domain.Operation) {
 		s.log.Error("operation failed", "operation_id", o.ID, "deployment_id", o.DeploymentID, "type", o.Type, "error", e)
 	} else {
 		result, _ := json.Marshal(map[string]any{"deployment_id": o.DeploymentID, "status": "succeeded"})
-		_ = s.repo.CompleteOperation(parent, o.ID, result)
+		if o.Type == OpDeletePurge {
+			_ = s.repo.CompletePurge(parent, o.ID, o.DeploymentID, result)
+		} else {
+			_ = s.repo.CompleteOperation(parent, o.ID, result)
+		}
 		s.log.Info("operation completed", "operation_id", o.ID, "deployment_id", o.DeploymentID, "type", o.Type, "duration_ms", s.clock.Now().Sub(start).Milliseconds())
 	}
 	s.metrics.OperationDuration.WithLabelValues(o.Type).Observe(s.clock.Now().Sub(start).Seconds())
@@ -455,13 +466,16 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	if e = s.transition(ctx, &d, domain.StatePullingImage); e != nil {
 		return e
 	}
+	var networks domain.DeploymentNetworks
 	if e = s.step(ctx, o, "ensure_networks", func() error {
-		if e := s.docker.EnsureNetwork(ctx, s.cfg.Docker.FrontendNetwork, false); e != nil {
-			return e
-		}
-		return s.docker.EnsureNetwork(ctx, s.cfg.Docker.EgressNetwork, true)
+		networks, e = s.docker.EnsureDeploymentNetworks(ctx, d.Request.DeploymentID)
+		return e
 	}); e != nil {
 		return e
+	}
+	storageDirectory, e := s.storage.EnsurePanel(d.Request.DeploymentID)
+	if e != nil {
+		return fmt.Errorf("ensure_storage: %w", e)
 	}
 	if e = s.step(ctx, o, "pull_image", func() error { return s.docker.PullImage(ctx, d.Request.Image) }); e != nil {
 		return e
@@ -473,7 +487,10 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 	if e != nil {
 		return e
 	}
-	if e = s.step(ctx, o, "create_container", func() error { _, e := s.docker.CreateContainer(ctx, s.spec(d, secretFiles)); return e }); e != nil {
+	if e = s.step(ctx, o, "create_container", func() error {
+		_, e := s.docker.CreateContainer(ctx, s.spec(d, secretFiles, networks, storageDirectory))
+		return e
+	}); e != nil {
 		return e
 	}
 	if e = s.transition(ctx, &d, domain.StateStarting); e != nil {
@@ -538,12 +555,16 @@ func (s *Service) materializeSecrets(d domain.Deployment, bundle permanentSecret
 	return files, nil
 }
 
-func (s *Service) spec(d domain.Deployment, secretFiles map[string]string) domain.ContainerSpec {
+func (s *Service) spec(d domain.Deployment, secretFiles map[string]string, networks domain.DeploymentNetworks, storageDirectory string) domain.ContainerSpec {
 	env := map[string]string{}
 	for k, v := range d.Request.Environment {
 		env[k] = v
 	}
-	env["PGHOST"] = s.cfg.Postgres.Host
+	postgresHost := s.cfg.Postgres.PanelHost
+	if postgresHost == "" {
+		postgresHost = networks.BackendGateway
+	}
+	env["PGHOST"] = postgresHost
 	env["PGPORT"] = strconv.Itoa(s.cfg.Postgres.Port)
 	env["PGDATABASE"] = d.Request.Database.DatabaseName
 	env["PGUSER"] = d.Request.Database.Username
@@ -553,7 +574,7 @@ func (s *Service) spec(d domain.Deployment, secretFiles map[string]string) domai
 	env["PANEL_BOOTSTRAP_FILE"] = "/run/secrets/panel_bootstrap.json"
 	env["CENTRALCLOUD_INTERNAL_SECRET_FILE"] = "/run/secrets/internal_secret"
 	env["PANEL_MANAGED"] = "true"
-	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFiles: secretFiles, StorageDirectory: filepath.Join(s.cfg.Storage.PanelDirectory, d.Request.DeploymentID), ManagementLabels: ManagementLabels(d.Request), TraefikLabels: TraefikLabels(d.Request, s.cfg), FrontendNetwork: s.cfg.Docker.FrontendNetwork, EgressNetwork: s.cfg.Docker.EgressNetwork, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}
+	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFiles: secretFiles, StorageDirectory: storageDirectory, ManagementLabels: ManagementLabels(d.Request), TraefikLabels: TraefikLabels(d.Request, s.cfg, networks.Frontend), FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}
 }
 func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {
 	version := r.Image
@@ -562,9 +583,9 @@ func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {
 	}
 	return map[string]string{"centralcloud.managed": "true", "centralcloud.deployment_id": r.DeploymentID, "centralcloud.project_id": r.ProjectID, "centralcloud.hostname": r.Hostname, "centralcloud.version": version}
 }
-func TraefikLabels(r contracts.CreateDeploymentRequest, c config.Config) map[string]string {
+func TraefikLabels(r contracts.CreateDeploymentRequest, c config.Config, frontendNetwork string) map[string]string {
 	id := "cc" + strings.ReplaceAll(r.DeploymentID, "-", "")
-	labels := map[string]string{"traefik.enable": "true", "traefik.docker.network": c.Docker.FrontendNetwork, "traefik.http.routers." + id + ".rule": "Host(`" + r.Hostname + "`)", "traefik.http.routers." + id + ".entrypoints": c.Traefik.Entrypoint, "traefik.http.services." + id + ".loadbalancer.server.port": "8080"}
+	labels := map[string]string{"traefik.enable": "true", "traefik.docker.network": frontendNetwork, "traefik.http.routers." + id + ".rule": "Host(`" + r.Hostname + "`)", "traefik.http.routers." + id + ".entrypoints": c.Traefik.Entrypoint, "traefik.http.services." + id + ".loadbalancer.server.port": "8080"}
 	if c.Traefik.CertificateResolver != "" {
 		labels["traefik.http.routers."+id+".tls"] = "true"
 		labels["traefik.http.routers."+id+".tls.certresolver"] = c.Traefik.CertificateResolver
@@ -616,8 +637,8 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	if e := json.Unmarshal(o.Payload, &req); e != nil {
 		return e
 	}
-	if req.Image != s.cfg.Docker.PanelImageRepository && !strings.HasPrefix(req.Image, s.cfg.Docker.PanelImageRepository+":") && !strings.HasPrefix(req.Image, s.cfg.Docker.PanelImageRepository+"@") {
-		return fmt.Errorf("image repository is not allowed")
+	if e := domain.ValidatePanelImage(req.Image, s.cfg); e != nil {
+		return e
 	}
 	d, e := s.repo.GetDeployment(ctx, o.DeploymentID)
 	if e != nil {
@@ -638,7 +659,15 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	if e != nil {
 		return e
 	}
-	backup, e := s.backups.Create(ctx, d, secretBundle.DatabasePassword)
+	networks, e := s.docker.EnsureDeploymentNetworks(ctx, d.Request.DeploymentID)
+	if e != nil {
+		return e
+	}
+	storageDirectory, e := s.storage.EnsurePanel(d.Request.DeploymentID)
+	if e != nil {
+		return e
+	}
+	backup, e := s.backups.Create(ctx, d, secretBundle.DatabasePassword, networks)
 	if e != nil {
 		return e
 	}
@@ -655,7 +684,7 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	}
 	secretFiles, e := s.materializeSecrets(d, secretBundle)
 	if e == nil {
-		_, e = s.docker.CreateContainer(ctx, s.spec(d, secretFiles))
+		_, e = s.docker.CreateContainer(ctx, s.spec(d, secretFiles, networks, storageDirectory))
 	}
 	if e == nil {
 		e = s.docker.StartContainer(ctx, d.Request.DeploymentID)
@@ -669,12 +698,12 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	if e != nil {
 		failed := e
 		_ = s.docker.RemoveContainer(ctx, d.Request.DeploymentID)
-		if re := s.backups.Restore(ctx, d, secretBundle.DatabasePassword, backup); re != nil {
+		if re := s.backups.Restore(ctx, d, secretBundle.DatabasePassword, backup, networks); re != nil {
 			return fmt.Errorf("upgrade failed: %w; restore failed: %w", failed, re)
 		}
 		d.Request.Image = oldImage
 		_ = s.repo.SaveDeployment(ctx, d)
-		_, re := s.docker.CreateContainer(ctx, s.spec(d, secretFiles))
+		_, re := s.docker.CreateContainer(ctx, s.spec(d, secretFiles, networks, storageDirectory))
 		if re == nil {
 			re = s.docker.StartContainer(ctx, d.Request.DeploymentID)
 		}
@@ -719,16 +748,22 @@ func (s *Service) remove(ctx context.Context, o domain.Operation, purge bool) er
 		return e
 	}
 	_ = s.secrets.Remove(d.Request.DeploymentID)
+	if e = s.docker.RemoveDeploymentNetworks(ctx, d.Request.DeploymentID); e != nil {
+		return e
+	}
 	if purge {
 		if e = s.postgres.DropRoleAndDatabase(ctx, d.Request.Database.DatabaseName, d.Request.Database.Username, d.Request.DeploymentID); e != nil {
+			return e
+		}
+		if e = s.storage.PurgePanel(d.Request.DeploymentID); e != nil {
+			return e
+		}
+		if e = s.backups.Purge(ctx, d.Request.DeploymentID); e != nil {
 			return e
 		}
 	}
 	if e = s.transition(ctx, &d, domain.StateDeleted); e != nil {
 		return e
-	}
-	if purge {
-		return s.repo.DeleteDeploymentMaterial(ctx, d.Request.DeploymentID)
 	}
 	return nil
 }

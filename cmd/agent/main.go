@@ -23,6 +23,7 @@ import (
 	ccdocker "github.com/centralcorp/centralcloud-node-agent/internal/docker"
 	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
 	"github.com/centralcorp/centralcloud-node-agent/internal/health"
+	"github.com/centralcorp/centralcloud-node-agent/internal/localstorage"
 	"github.com/centralcorp/centralcloud-node-agent/internal/logging"
 	ccmetrics "github.com/centralcorp/centralcloud-node-agent/internal/metrics"
 	"github.com/centralcorp/centralcloud-node-agent/internal/postgres"
@@ -61,11 +62,25 @@ func run(path string, log *slog.Logger) error {
 		return e
 	}
 	defer func() { _ = repo.Close() }()
+	c.Node.ID, e = repo.ResolveNodeID(context.Background(), c.Node.ID, domain.UUIDGenerator{}.New())
+	if e != nil {
+		return e
+	}
+	if c.Node.Name == "" {
+		c.Node.Name, e = os.Hostname()
+		if e != nil {
+			return fmt.Errorf("resolve node name: %w", e)
+		}
+	}
+	localData, e := localstorage.New(c.Storage.PanelDirectory, c.Storage.BackupDirectory)
+	if e != nil {
+		return e
+	}
 	secrets, e := auth.NewSecretStore(c.Security.MasterKeyFile, c.Storage.RuntimeDirectory)
 	if e != nil {
 		return e
 	}
-	docker, e := ccdocker.New(c.Docker.Socket, c.Docker.RegistryUsernameFile, c.Docker.RegistryTokenFile, c.Docker.EgressNetwork)
+	docker, e := ccdocker.New(c.Docker.Socket, c.Docker.RegistryUsernameFile, c.Docker.RegistryTokenFile, c.Traefik.ContainerName)
 	if e != nil {
 		return e
 	}
@@ -77,7 +92,7 @@ func run(path string, log *slog.Logger) error {
 		return e
 	}
 	defer pg.Close()
-	backups, e := backup.New(c, secrets)
+	backups, e := backup.New(c, secrets, localData)
 	if e != nil {
 		return e
 	}
@@ -85,8 +100,8 @@ func run(path string, log *slog.Logger) error {
 	checker := health.New(docker)
 	registry := prometheus.DefaultRegisterer
 	m := ccmetrics.New(registry)
-	collector := resources.New(c.Storage.DatabaseFile, repo)
-	svc := deployment.New(c, repo, docker, pg, checker, secrets, backups, collector, domain.UUIDGenerator{}, clock, log, m)
+	collector := resources.New(c.Storage.DatabaseFile, repo, c.Node.ID)
+	svc := deployment.New(c, repo, docker, pg, checker, secrets, backups, localData, collector, domain.UUIDGenerator{}, clock, log, m)
 	api.Version = version
 	handler, e := api.New(c, svc, repo, docker, pg, collector, m, log)
 	if e != nil {

@@ -40,3 +40,21 @@ panel:
 		t.Fatalf("unexpected config: %#v", c)
 	}
 }
+
+func TestValidateRejectsInvalidNodeCIDRAndEnvironmentAllowlist(t *testing.T) {
+	c := Defaults()
+	c.Security.Mode = "token"
+	c.Security.TokenFile = "/tmp/token"
+	c.Security.MasterKeyFile = "/tmp/key"
+	c.Postgres.Host = "postgres"
+	c.Postgres.AdministratorUsername = "provisioner"
+	c.Postgres.AdministratorPasswordFile = "/tmp/postgres"
+	c.Traefik.DomainSuffix = "example.test"
+	c.Panel.MigrationCommand = []string{"migrate"}
+	c.Node.ID = "not-a-uuid"
+	c.Security.AllowedSourceCIDRs = []string{"192.0.2.0/24", "broken"}
+	c.Panel.AllowedEnvironmentKeys = []string{"APP_ENV", "bad-key"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("invalid node identity, CIDR and environment key accepted")
+	}
+}

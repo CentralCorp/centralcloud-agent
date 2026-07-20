@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/centralcorp/centralcloud-node-agent/internal/config"
@@ -45,5 +46,48 @@ func TestDatabaseIdentifier(t *testing.T) {
 		if ValidateDatabaseIdentifier(v) == nil {
 			t.Fatalf("accepted %q", v)
 		}
+	}
+}
+
+func TestEnvironmentAllowlistAndSecretKeys(t *testing.T) {
+	c := config.Defaults()
+	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
+	for _, key := range []string{"UNKNOWN", "API_TOKEN", "APP_KEY", "PGPASSWORD"} {
+		r := validRequest()
+		r.Environment = map[string]string{key: "must-not-appear-in-error"}
+		err := ValidateCreate(&r, c)
+		if err == nil {
+			t.Fatalf("environment key %q accepted", key)
+		}
+		if strings.Contains(err.Error(), "must-not-appear-in-error") {
+			t.Fatalf("environment value leaked for %q: %v", key, err)
+		}
+	}
+	r := validRequest()
+	r.Environment = map[string]string{"CENTRALPANEL_MODE": "cloud"}
+	if err := ValidateCreate(&r, c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPanelImageDigestPolicy(t *testing.T) {
+	c := config.Defaults()
+	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
+	tagged := validRequest()
+	if err := ValidateCreate(&tagged, c); err != nil {
+		t.Fatalf("tag rejected while digest policy disabled: %v", err)
+	}
+	c.Docker.RequireImageDigest = true
+	if err := ValidateCreate(&tagged, c); err == nil {
+		t.Fatal("mutable tag accepted while digest policy enabled")
+	}
+	digested := validRequest()
+	digested.Image = "ghcr.io/centralcorp/centralpanel@sha256:" + strings.Repeat("a", 64)
+	if err := ValidateCreate(&digested, c); err != nil {
+		t.Fatalf("valid digest rejected: %v", err)
+	}
+	digested.Image = "ghcr.io/centralcorp/other@sha256:" + strings.Repeat("a", 64)
+	if err := ValidateCreate(&digested, c); err == nil {
+		t.Fatal("digest from another repository accepted")
 	}
 }

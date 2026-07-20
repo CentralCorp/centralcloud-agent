@@ -2,7 +2,7 @@
   "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
   "project_id": "123e4567-e89b-42d3-a456-426614174001",
   "hostname": "example.cloud.centralcorp.fr",
-  "image": "ghcr.io/centralcorp/centralpanel:1.0.0",
+  "image": "ghcr.io/centralcorp/centralpanel@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "environment": {
     "APP_ENV": "production",
     "CENTRALPANEL_MODE": "cloud",
@@ -19,5 +19,11 @@
   "healthcheck": {
     "path": "/health",
     "timeout_seconds": 60
+  },
+  "bootstrap": {
+    "admin_name": "Administrateur",
+    "admin_email": "admin@example.com",
+    "admin_password": "mot-de-passe-initial-fort",
+    "internal_secret": "12345678901234567890123456789012"
   }
 }

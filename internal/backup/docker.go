@@ -24,17 +24,18 @@ type Manager struct {
 	cfg     config.Config
 	cli     *client.Client
 	secrets domain.SecretStore
+	storage domain.DeploymentStorage
 }
 
-func New(c config.Config, secrets domain.SecretStore) (*Manager, error) {
+func New(c config.Config, secrets domain.SecretStore, storage domain.DeploymentStorage) (*Manager, error) {
 	cli, e := client.NewClientWithOpts(client.WithHost(c.Docker.Socket), client.WithAPIVersionNegotiation())
 	if e != nil {
 		return nil, e
 	}
-	return &Manager{cfg: c, cli: cli, secrets: secrets}, nil
+	return &Manager{cfg: c, cli: cli, secrets: secrets, storage: storage}, nil
 }
 func (m *Manager) Close() error { return m.cli.Close() }
-func (m *Manager) Create(ctx context.Context, d domain.Deployment, password string) (string, error) {
+func (m *Manager) Create(ctx context.Context, d domain.Deployment, password string, networks domain.DeploymentNetworks) (string, error) {
 	pull, e := m.cli.ImagePull(ctx, m.cfg.Postgres.BackupImage, image.PullOptions{})
 	if e != nil {
 		return "", e
@@ -44,8 +45,8 @@ func (m *Manager) Create(ctx context.Context, d domain.Deployment, password stri
 	if e != nil {
 		return "", e
 	}
-	dir := filepath.Join(m.cfg.Storage.BackupDirectory, d.Request.DeploymentID)
-	if e := os.MkdirAll(dir, 0700); e != nil {
+	dir, e := m.storage.EnsureBackup(d.Request.DeploymentID)
+	if e != nil {
 		return "", e
 	}
 	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".dump"
@@ -54,8 +55,12 @@ func (m *Manager) Create(ctx context.Context, d domain.Deployment, password stri
 	if e != nil {
 		return "", e
 	}
-	args := []string{"pg_dump", "--format=custom", "--no-owner", "--file=/backup/" + name, "--host=" + m.cfg.Postgres.Host, "--port=" + strconv.Itoa(m.cfg.Postgres.Port), "--username=" + d.Request.Database.Username, d.Request.Database.DatabaseName}
-	if e = m.run(ctx, d.Request.DeploymentID, args, dir, secret); e != nil {
+	postgresHost, e := m.containerPostgresHost(networks)
+	if e != nil {
+		return "", e
+	}
+	args := []string{"pg_dump", "--format=custom", "--no-owner", "--file=/backup/" + name, "--host=" + postgresHost, "--port=" + strconv.Itoa(m.cfg.Postgres.Port), "--username=" + d.Request.Database.Username, d.Request.Database.DatabaseName}
+	if e = m.run(ctx, d.Request.DeploymentID, args, dir, secret, networks); e != nil {
 		return "", e
 	}
 	raw, e := os.ReadFile(host) // #nosec G304 -- host is generated below the configured backup directory.
@@ -73,7 +78,7 @@ func (m *Manager) Create(ctx context.Context, d domain.Deployment, password stri
 	_ = os.Remove(host)
 	return encrypted, nil
 }
-func (m *Manager) Restore(ctx context.Context, d domain.Deployment, password, encrypted string) error {
+func (m *Manager) Restore(ctx context.Context, d domain.Deployment, password, encrypted string, networks domain.DeploymentNetworks) error {
 	enc, e := os.ReadFile(encrypted) // #nosec G304 -- encrypted is a path returned by Create and kept in the state repository.
 	if e != nil {
 		return e
@@ -93,22 +98,30 @@ func (m *Manager) Restore(ctx context.Context, d domain.Deployment, password, en
 	if e != nil {
 		return e
 	}
-	args := []string{"pg_restore", "--clean", "--if-exists", "--no-owner", "--host=" + m.cfg.Postgres.Host, "--port=" + strconv.Itoa(m.cfg.Postgres.Port), "--username=" + d.Request.Database.Username, "--dbname=" + d.Request.Database.DatabaseName, "/backup/" + name}
-	return m.run(ctx, d.Request.DeploymentID, args, dir, secret)
+	postgresHost, e := m.containerPostgresHost(networks)
+	if e != nil {
+		return e
+	}
+	args := []string{"pg_restore", "--clean", "--if-exists", "--no-owner", "--host=" + postgresHost, "--port=" + strconv.Itoa(m.cfg.Postgres.Port), "--username=" + d.Request.Database.Username, "--dbname=" + d.Request.Database.DatabaseName, "/backup/" + name}
+	return m.run(ctx, d.Request.DeploymentID, args, dir, secret, networks)
 }
-func (m *Manager) run(ctx context.Context, id string, args []string, backupDir, secret string) error {
+func (m *Manager) run(ctx context.Context, id string, args []string, backupDir, secret string, networks domain.DeploymentNetworks) error {
 	// libpq requires the pgpass colon-separated format; generate it in the protected runtime directory without invoking a shell.
 	pass, e := os.ReadFile(secret) // #nosec G304 -- secret is returned by the protected SecretStore.
 	if e != nil {
 		return e
 	}
 	pgpass := filepath.Join(filepath.Dir(secret), "pgpass")
-	line := fmt.Sprintf("%s:%d:*:%s:%s\n", m.cfg.Postgres.Host, m.cfg.Postgres.Port, extractUser(args), string(pass))
+	postgresHost, e := m.containerPostgresHost(networks)
+	if e != nil {
+		return e
+	}
+	line := fmt.Sprintf("%s:%d:*:%s:%s\n", postgresHost, m.cfg.Postgres.Port, extractUser(args), string(pass))
 	if e = os.WriteFile(pgpass, []byte(line), 0400); e != nil { // #nosec G703 -- pgpass is constrained to the protected runtime directory.
 		return e
 	}
 	defer func() { _ = os.Remove(pgpass) }()
-	resp, e := m.cli.ContainerCreate(ctx, &container.Config{Image: m.cfg.Postgres.BackupImage, Cmd: args, Env: []string{"PGPASSFILE=/run/secrets/pgpass"}, Labels: map[string]string{"centralcloud.managed": "true", "centralcloud.backup": "true", "centralcloud.deployment_id": id}}, &container.HostConfig{ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Binds: []string{backupDir + ":/backup", pgpass + ":/run/secrets/pgpass:ro"}, Tmpfs: map[string]string{"/tmp": "rw,noexec,nosuid,size=32m"}}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{m.cfg.Docker.EgressNetwork: {}}}, nil, "")
+	resp, e := m.cli.ContainerCreate(ctx, &container.Config{Image: m.cfg.Postgres.BackupImage, Cmd: args, Env: []string{"PGPASSFILE=/run/secrets/pgpass"}, Labels: map[string]string{"centralcloud.managed": "true", "centralcloud.backup": "true", "centralcloud.deployment_id": id}}, &container.HostConfig{ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Binds: []string{backupDir + ":/backup", pgpass + ":/run/secrets/pgpass:ro"}, Tmpfs: map[string]string{"/tmp": "rw,noexec,nosuid,size=32m"}}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{networks.Backend: {}}}, nil, "")
 	if e != nil {
 		return e
 	}
@@ -140,8 +153,22 @@ func extractUser(args []string) string {
 	}
 	return ""
 }
+
+func (m *Manager) containerPostgresHost(networks domain.DeploymentNetworks) (string, error) {
+	host := m.cfg.Postgres.PanelHost
+	if host == "" {
+		host = networks.BackendGateway
+	}
+	if host == "" {
+		return "", errors.New("deployment backend network has no PostgreSQL gateway")
+	}
+	return host, nil
+}
 func (m *Manager) Prune(ctx context.Context, id string, keep int, maxAge time.Duration) error {
-	dir := filepath.Join(m.cfg.Storage.BackupDirectory, id)
+	dir, e := m.storage.EnsureBackup(id)
+	if e != nil {
+		return e
+	}
 	entries, e := os.ReadDir(dir)
 	if errors.Is(e, fs.ErrNotExist) {
 		return nil
@@ -149,9 +176,15 @@ func (m *Manager) Prune(ctx context.Context, id string, keep int, maxAge time.Du
 	if e != nil {
 		return e
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	backups := entries[:0]
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".enc" {
+			backups = append(backups, entry)
+		}
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i].Name() > backups[j].Name() })
 	now := time.Now()
-	for i, en := range entries {
+	for i, en := range backups {
 		info, _ := en.Info()
 		if !en.IsDir() && (i >= keep || now.Sub(info.ModTime()) > maxAge) {
 			if e = os.Remove(filepath.Join(dir, en.Name())); e != nil {
@@ -160,4 +193,8 @@ func (m *Manager) Prune(ctx context.Context, id string, keep int, maxAge time.Du
 		}
 	}
 	return nil
+}
+
+func (m *Manager) Purge(_ context.Context, id string) error {
+	return m.storage.PurgeBackups(id)
 }

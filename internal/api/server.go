@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"regexp"
 	"strconv"
@@ -36,24 +37,32 @@ const correlationKey contextKey = "correlation_id"
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type Server struct {
-	cfg       config.Config
-	service   *deployment.Service
-	repo      domain.StateRepository
-	docker    domain.DockerClient
-	postgres  domain.PostgresProvisioner
-	resources domain.ResourceCollector
-	metrics   *ccmetrics.Metrics
-	log       *slog.Logger
-	token     []byte
-	allowed   map[string]bool
-	mu        sync.Mutex
-	limiters  map[string]*rate.Limiter
+	cfg         config.Config
+	service     *deployment.Service
+	repo        domain.StateRepository
+	docker      domain.DockerClient
+	postgres    domain.PostgresProvisioner
+	resources   domain.ResourceCollector
+	metrics     *ccmetrics.Metrics
+	log         *slog.Logger
+	token       []byte
+	allowed     map[string]bool
+	sourceCIDRs []netip.Prefix
+	mu          sync.Mutex
+	limiters    map[string]*rate.Limiter
 }
 
 func New(c config.Config, svc *deployment.Service, repo domain.StateRepository, d domain.DockerClient, p domain.PostgresProvisioner, r domain.ResourceCollector, m *ccmetrics.Metrics, log *slog.Logger) (*Server, error) {
 	s := &Server{cfg: c, service: svc, repo: repo, docker: d, postgres: p, resources: r, metrics: m, log: log, allowed: map[string]bool{}, limiters: map[string]*rate.Limiter{}}
 	for _, v := range c.Security.AllowedClientSANs {
 		s.allowed[v] = true
+	}
+	for _, raw := range c.Security.AllowedSourceCIDRs {
+		prefix, e := netip.ParsePrefix(raw)
+		if e != nil {
+			return nil, fmt.Errorf("parse allowed source CIDR: %w", e)
+		}
+		s.sourceCIDRs = append(s.sourceCIDRs, prefix.Masked())
 	}
 	if c.Security.Mode == "token" {
 		b, e := os.ReadFile(c.Security.TokenFile)
@@ -92,7 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusNotFound, "not_found", "route not found", nil)
 	})
-	return s.recover(s.context(s.limit(s.authenticate(mux))))
+	return s.recover(s.context(s.filterSource(s.limit(s.authenticate(mux)))))
 }
 func (s *Server) context(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +133,32 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+func (s *Server) filterSource(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.sourceCIDRs) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		host, _, e := net.SplitHostPort(r.RemoteAddr)
+		if e != nil {
+			s.writeError(w, r, http.StatusForbidden, "source_ip_forbidden", "source IP is not allowed", nil)
+			return
+		}
+		ip, e := netip.ParseAddr(host)
+		if e != nil {
+			s.writeError(w, r, http.StatusForbidden, "source_ip_forbidden", "source IP is not allowed", nil)
+			return
+		}
+		ip = ip.Unmap()
+		for _, prefix := range s.sourceCIDRs {
+			if prefix.Contains(ip) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		s.writeError(w, r, http.StatusForbidden, "source_ip_forbidden", "source IP is not allowed", nil)
 	})
 }
 func (s *Server) identity(r *http.Request) string {
@@ -205,7 +240,7 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, dst any) ([]by
 	return b, true
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	resp := contracts.HealthResponse{Status: "ok", Version: Version, Docker: "ok", Postgres: "ok", Database: "ok"}
+	resp := contracts.HealthResponse{NodeID: s.cfg.Node.ID, NodeName: s.cfg.Node.Name, AgentVersion: Version, Status: "ok", Version: Version, Docker: "ok", Postgres: "ok", Database: "ok"}
 	status := 200
 	if e := s.docker.Ping(r.Context()); e != nil {
 		resp.Docker = "error"
@@ -306,7 +341,7 @@ func (s *Server) upgrade(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	b, e := s.service.Submit(r.Context(), deployment.OpUpgrade, r.PathValue("id"), r.Header.Get("Idempotency-Key"), r.Method, r.URL.Path, raw)
+	b, e := s.service.SubmitUpgrade(r.Context(), r.PathValue("id"), r.Header.Get("Idempotency-Key"), r.Method, r.URL.Path, req, raw)
 	if e != nil {
 		s.handleError(w, r, e)
 		return

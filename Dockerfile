@@ -7,7 +7,7 @@ COPY . .
 ARG VERSION=dev
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/centralcloud-agent ./cmd/agent
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/centralcloud-agent ./cmd/agent
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/centralcloud-agent /usr/local/bin/centralcloud-agent

@@ -15,7 +15,7 @@ fi
 getent group docker >/dev/null
 id centralcloud-agent >/dev/null 2>&1 || useradd --system --uid 10001 --home /var/lib/centralcloud-agent --shell /usr/sbin/nologin --groups docker centralcloud-agent
 install -D -m 0755 "${BINARY}" /usr/local/bin/centralcloud-agent
-install -d -o centralcloud-agent -g centralcloud-agent -m 0700 /var/lib/centralcloud-agent /var/lib/centralcloud-agent/backups /run/centralcloud-agent
+install -d -o centralcloud-agent -g centralcloud-agent -m 0700 /var/lib/centralcloud-agent /var/lib/centralcloud-agent/backups /var/lib/centralcloud-agent/panels /run/centralcloud-agent
 install -d -o root -g centralcloud-agent -m 0750 /etc/centralcloud-agent /etc/centralcloud-agent/tls /etc/centralcloud-agent/secrets
 install -m 0644 deploy/systemd/centralcloud-agent.service /etc/systemd/system/centralcloud-agent.service
 if [[ ! -f /etc/centralcloud-agent/config.yaml ]]; then
