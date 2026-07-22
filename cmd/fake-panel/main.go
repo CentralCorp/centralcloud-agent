@@ -27,7 +27,8 @@ func main() {
 			if len(os.Args) != 3 {
 				os.Exit(2)
 			}
-			connection, err := net.DialTimeout("tcp", os.Args[2], 2*time.Second)
+			dialer := net.Dialer{Timeout: 2 * time.Second}
+			connection, err := dialer.DialContext(context.Background(), "tcp", os.Args[2]) //nolint:gosec // Test-only probe target is supplied by the integration harness.
 			if err != nil {
 				os.Exit(1)
 			}

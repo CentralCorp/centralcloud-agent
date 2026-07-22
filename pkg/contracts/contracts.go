@@ -28,6 +28,7 @@ type CreateDeploymentRequest struct {
 	DeploymentID string            `json:"deployment_id"`
 	ProjectID    string            `json:"project_id"`
 	Hostname     string            `json:"hostname"`
+	Aliases      []string          `json:"aliases,omitempty"`
 	Image        string            `json:"image"`
 	Environment  map[string]string `json:"environment"`
 	Resources    Resources         `json:"resources"`
@@ -51,6 +52,11 @@ type AcceptedOperation struct {
 	Status       string `json:"status"`
 }
 
+type AcceptedCreateOperation struct {
+	AcceptedOperation
+	Aliases []string `json:"aliases"`
+}
+
 type Operation struct {
 	ID           string         `json:"id"`
 	DeploymentID string         `json:"deployment_id,omitempty"`
@@ -66,6 +72,7 @@ type Deployment struct {
 	DeploymentID   string            `json:"deployment_id"`
 	ProjectID      string            `json:"project_id"`
 	Hostname       string            `json:"hostname"`
+	Aliases        []string          `json:"aliases"`
 	Image          string            `json:"image"`
 	State          string            `json:"state"`
 	Environment    map[string]string `json:"environment,omitempty"`
@@ -79,14 +86,15 @@ type Deployment struct {
 }
 
 type HealthResponse struct {
-	NodeID       string `json:"node_id"`
-	NodeName     string `json:"node_name"`
-	AgentVersion string `json:"agent_version"`
-	Status       string `json:"status"`
-	Version      string `json:"version"`
-	Docker       string `json:"docker"`
-	Postgres     string `json:"postgres"`
-	Database     string `json:"database"`
+	NodeID       string   `json:"node_id"`
+	NodeName     string   `json:"node_name"`
+	AgentVersion string   `json:"agent_version"`
+	Status       string   `json:"status"`
+	Version      string   `json:"version"`
+	Docker       string   `json:"docker"`
+	Postgres     string   `json:"postgres"`
+	Database     string   `json:"database"`
+	Capabilities []string `json:"capabilities"`
 }
 
 type ResourceResponse struct {

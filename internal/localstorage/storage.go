@@ -93,7 +93,7 @@ func ensureOwnedDirectory(root, id string) (string, error) {
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return "", errors.New("deployment storage path changed during validation")
 	}
-	if err = os.Chmod(path, 0700); err != nil {
+	if err = os.Chmod(path, 0700); err != nil { //nolint:gosec // path was verified above as a real directory and must remain traversable by its owner.
 		return "", err
 	}
 	if err = ensureMarker(root, id); err != nil {

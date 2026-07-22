@@ -1,5 +1,5 @@
 GO_IMAGE ?= golang:1.26.5
-VERSION ?= dev
+VERSION ?= 1.1.0
 GO_RUN = docker run --rm -v $(CURDIR):/src -v centralcloud-go-cache:/go/pkg/mod -w /src $(GO_IMAGE)
 
 .PHONY: fmt fmt-check vet lint test test-race build build-all docker-build compose-up compose-down

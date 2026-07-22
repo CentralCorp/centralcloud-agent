@@ -45,7 +45,7 @@ traefik:
   container_name: "centralcloud-traefik"
   domain_suffix: "cloud.centralcorp.fr"
   entrypoint: "websecure"
-  certificate_resolver: "letsencrypt"
+  certificate_resolver: "letsencrypt" # Traefik déduit le SAN canonique et l'alias de la règle Host du routeur.
 
 limits:
   maximum_deployments: 50

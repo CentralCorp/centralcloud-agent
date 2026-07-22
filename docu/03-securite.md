@@ -71,6 +71,7 @@ Les protections principales sont :
 - rejet des champs JSON inconnus et des documents contenant plusieurs valeurs ;
 - UUID stricts pour les en-têtes de mutation ;
 - validation du suffixe DNS autorisé ;
+- validation stricte des alias DNS ASCII (253 caractères, labels de 63 caractères, aucun IP/port/URL/wildcard ni caractère d'échappement Traefik) ;
 - allowlist du dépôt d'images CentralPanel ;
 - validation stricte des identifiants PostgreSQL ;
 - allowlist des variables d'environnement, rejet des clés réservées et des noms susceptibles de contenir un secret ;
@@ -80,6 +81,8 @@ Les protections principales sont :
 - noms de fichiers secrets réduits à un nom de base, sans traversée de répertoire.
 
 Le serveur applique aussi des timeouts de lecture, écriture et inactivité, une limite de 32 Kio sur les en-têtes et une limitation de débit par identité mTLS ou adresse IP.
+
+Le hostname canonique reste obligatoirement égal ou sous-domaine de `traefik.domain_suffix`. L'alias n'est volontairement pas soumis à ce suffixe : l'API Agent est privée et authentifiée, et le Control Plane valide la propriété via CNAME avant la création. L'Agent ne fait aucune requête DNS. Les valeurs sont revalidées juste avant la construction de la règle Traefik ; leur alphabet exclut backticks, guillemets et opérateurs de règle.
 
 ## 5. Gestion des secrets
 
@@ -195,7 +198,7 @@ SQLite fonctionne avec :
 - journal WAL ;
 - clés étrangères activées ;
 - une seule connexion ouverte ;
-- tables séparées pour déploiements, opérations, étapes, idempotence, jetons de purge et audit.
+- tables séparées pour déploiements, opérations, étapes, idempotence, jetons de purge et audit ; les alias sont stockés avec le déploiement dans `aliases_json` et supprimés atomiquement avec lui lors d'une purge.
 
 Au démarrage, les opérations restées `running` repassent à `queued`. Les étapes externes sont conçues pour être rejouables : recherche des conteneurs par labels, vérification de propriété PostgreSQL et création conditionnelle des réseaux.
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/centralcorp/centralcloud-node-agent/internal/config"
+	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
 	"github.com/centralcorp/centralcloud-node-agent/internal/fakes"
 	ccmetrics "github.com/centralcorp/centralcloud-node-agent/internal/metrics"
 	"github.com/centralcorp/centralcloud-node-agent/pkg/contracts"
@@ -124,6 +125,30 @@ func TestHealthIncludesPersistentNodeIdentity(t *testing.T) {
 		}
 		if path == "/v1/health" && (response["node_name"] != "node-test-01" || response["agent_version"] != response["version"]) {
 			t.Fatalf("unexpected health identity: %#v", response)
+		}
+		if path == "/v1/health" {
+			capabilities, ok := response["capabilities"].([]any)
+			if !ok || len(capabilities) != 1 || capabilities[0] != "hostname_aliases" {
+				t.Fatalf("unexpected health capabilities: %#v", response)
+			}
+		}
+	}
+}
+
+func TestDeploymentResponsesAlwaysContainAliases(t *testing.T) {
+	for _, aliases := range [][]string{nil, {"panel.example.com"}} {
+		converted := convert(domain.Deployment{Request: contracts.CreateDeploymentRequest{Aliases: aliases}})
+		body, err := json.Marshal(converted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response map[string]any
+		if err = json.Unmarshal(body, &response); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := response["aliases"].([]any)
+		if !ok || len(got) != len(aliases) {
+			t.Fatalf("aliases missing or null: %s", body)
 		}
 	}
 }

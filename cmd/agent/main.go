@@ -32,7 +32,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var version = "dev"
+var version = "1.1.0"
 
 func main() {
 	configPath := flag.String("config", "/etc/centralcloud-agent/config.yaml", "configuration file")

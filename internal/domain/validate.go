@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -16,6 +17,7 @@ var (
 	dbRE          = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 	envRE         = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 	hostRE        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	hostLabelRE   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	imageDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
@@ -43,6 +45,28 @@ func ValidateCreate(r *contracts.CreateDeploymentRequest, c config.Config) error
 	if !hostRE.MatchString(r.Hostname) || (r.Hostname != c.Traefik.DomainSuffix && !strings.HasSuffix(r.Hostname, "."+c.Traefik.DomainSuffix)) {
 		errs = append(errs, errors.New("hostname is outside the configured domain suffix"))
 	}
+	if len(r.Aliases) > 1 {
+		errs = append(errs, errors.New("aliases must contain at most one hostname"))
+	}
+	aliases := make([]string, 0, len(r.Aliases))
+	seenAliases := make(map[string]struct{}, len(r.Aliases))
+	for _, value := range r.Aliases {
+		alias := strings.ToLower(strings.TrimSuffix(value, "."))
+		switch {
+		case ValidateDNSHostname(alias) != nil:
+			errs = append(errs, errors.New("alias must be a valid ASCII DNS hostname"))
+		case alias == r.Hostname:
+			errs = append(errs, errors.New("alias must differ from hostname"))
+		default:
+			if _, exists := seenAliases[alias]; exists {
+				errs = append(errs, errors.New("aliases must not contain duplicates"))
+			} else {
+				seenAliases[alias] = struct{}{}
+			}
+		}
+		aliases = append(aliases, alias)
+	}
+	r.Aliases = aliases
 	if err := ValidatePanelImage(r.Image, c); err != nil {
 		errs = append(errs, err)
 	}
@@ -107,6 +131,24 @@ func ValidateCreate(r *contracts.CreateDeploymentRequest, c config.Config) error
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ValidateDNSHostname accepts normalized, lowercase ASCII DNS hostnames. It is
+// also used immediately before rendering Traefik rules so only this restricted
+// alphabet can reach a Host matcher.
+func ValidateDNSHostname(value string) error {
+	if value == "" || len(value) > 253 || value != strings.ToLower(value) {
+		return errors.New("invalid DNS hostname")
+	}
+	if _, err := netip.ParseAddr(value); err == nil {
+		return errors.New("IP addresses are not DNS hostnames")
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) < 1 || len(label) > 63 || !hostLabelRE.MatchString(label) {
+			return errors.New("invalid DNS hostname label")
+		}
+	}
+	return nil
 }
 
 func ValidatePanelImage(value string, c config.Config) error {

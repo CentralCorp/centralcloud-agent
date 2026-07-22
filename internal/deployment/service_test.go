@@ -47,9 +47,26 @@ func TestSimulatedProvisioning(t *testing.T) {
 	resourceFake := &fakes.ResourceCollector{Value: contracts.ResourceResponse{MemoryAvailableBytes: 1 << 30}}
 	svc := New(c, repo, docker, pg, health, secrets, &fakes.BackupManager{}, &fakes.DeploymentStorage{Root: dir}, resourceFake, ids, clock, slog.New(slog.NewTextHandler(os.Stderr, nil)), m)
 	req := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174000", ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "example.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0", Environment: map[string]string{}, Database: contracts.Database{DatabaseName: "panel_abcd_db", Username: "panel_abcd_user"}, Healthcheck: contracts.Healthcheck{Path: "/up"}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
+	req.Aliases = []string{"panel.example.com"}
 	raw, _ := json.Marshal(req)
-	if _, e = svc.SubmitCreate(context.Background(), req, "123e4567-e89b-42d3-a456-426614174010", "POST", "/v1/deployments", raw); e != nil {
-		t.Fatal(e)
+	idempotencyKey := "123e4567-e89b-42d3-a456-426614174010"
+	created, submitErr := svc.SubmitCreate(context.Background(), req, idempotencyKey, "POST", "/v1/deployments", raw)
+	if submitErr != nil {
+		t.Fatal(submitErr)
+	}
+	var accepted contracts.AcceptedCreateOperation
+	if e = json.Unmarshal(created, &accepted); e != nil || len(accepted.Aliases) != 1 || accepted.Aliases[0] != "panel.example.com" {
+		t.Fatalf("create response does not contain aliases: %s err=%v", created, e)
+	}
+	replayed, replayErr := svc.SubmitCreate(context.Background(), req, idempotencyKey, "POST", "/v1/deployments", raw)
+	if replayErr != nil || string(replayed) != string(created) {
+		t.Fatalf("identical create was not replayed: %s err=%v", replayed, replayErr)
+	}
+	changed := req
+	changed.Aliases = []string{"other.example.com"}
+	changedRaw, _ := json.Marshal(changed)
+	if _, conflictErr := svc.SubmitCreate(context.Background(), changed, idempotencyKey, "POST", "/v1/deployments", changedRaw); !errors.Is(conflictErr, domain.ErrConflict) {
+		t.Fatalf("alias-changing replay did not conflict: %v", conflictErr)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	svc.Run(ctx)
@@ -64,6 +81,10 @@ func TestSimulatedProvisioning(t *testing.T) {
 			}
 			if docker.Spec.Environment["PGPASSWORD_FILE"] == "" || docker.Spec.SecretFiles["panel_bootstrap.json"] == "" || docker.Spec.TraefikLabels["traefik.enable"] != "true" {
 				t.Fatal("container contract incomplete")
+			}
+			routerRule := docker.Spec.TraefikLabels["traefik.http.routers.cc123e4567e89b42d3a456426614174000.rule"]
+			if routerRule != "Host(`example.cloud.centralcorp.fr`) || Host(`panel.example.com`)" {
+				t.Fatalf("unexpected alias router rule: %q", routerRule)
 			}
 			wantEnvironment := map[string]string{
 				"APP_ENV":           "production",
@@ -92,6 +113,25 @@ func TestSimulatedProvisioning(t *testing.T) {
 	t.Fatal("deployment did not become active")
 }
 
+func TestAcceptedCreateAlwaysReturnsAliasesArray(t *testing.T) {
+	svc := &Service{}
+	operation := domain.Operation{ID: "123e4567-e89b-42d3-a456-426614174099", DeploymentID: "123e4567-e89b-42d3-a456-426614174000"}
+	for _, aliases := range [][]string{nil, {}} {
+		body, err := svc.acceptedCreate(operation, aliases)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response map[string]any
+		if err = json.Unmarshal(body, &response); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := response["aliases"].([]any)
+		if !ok || len(got) != 0 {
+			t.Fatalf("create aliases missing or null: %s", body)
+		}
+	}
+}
+
 func TestMaterializeSecretsAdaptsBootstrapForPanelInstaller(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "key")
@@ -102,7 +142,7 @@ func TestMaterializeSecretsAdaptsBootstrapForPanelInstaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootstrap := contracts.Bootstrap{
+	bootstrap := contracts.Bootstrap{ //nolint:gosec // Deliberately recognizable test-only credentials verify secret separation.
 		AdminName:      "Panel Owner",
 		AdminEmail:     "owner@example.test",
 		AdminPassword:  "long-bootstrap-password",
@@ -158,7 +198,7 @@ func lifecycleService(t *testing.T, health domain.HealthChecker) (*Service, *fak
 	c := config.Defaults()
 	c.Traefik.DomainSuffix = "cloud.centralcorp.fr"
 	c.Postgres.Host = "postgres"
-	r := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174020", ProjectID: "123e4567-e89b-42d3-a456-426614174021", Hostname: "lifecycle.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: "panel_lifecycle_db", Username: "panel_lifecycle_user"}, Healthcheck: contracts.Healthcheck{Path: "/up", TimeoutSeconds: 5}}
+	r := contracts.CreateDeploymentRequest{DeploymentID: "123e4567-e89b-42d3-a456-426614174020", ProjectID: "123e4567-e89b-42d3-a456-426614174021", Hostname: "lifecycle.cloud.centralcorp.fr", Aliases: []string{"lifecycle.example.com"}, Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: "panel_lifecycle_db", Username: "panel_lifecycle_user"}, Healthcheck: contracts.Healthcheck{Path: "/up", TimeoutSeconds: 5}}
 	d := domain.Deployment{Request: r, State: domain.StateActive, CredentialsRef: "cccred://deployment/" + r.DeploymentID + "/postgres", EncryptedSecret: encrypted}
 	repo := fakes.NewStateRepository()
 	if err = repo.CreateDeployment(context.Background(), d); err != nil {
@@ -186,6 +226,9 @@ func TestUpgradeRollsBackImageAndDatabaseOnHealthFailure(t *testing.T) {
 	got, _ := repo.GetDeployment(context.Background(), d.Request.DeploymentID)
 	if got.State != domain.StateActive || got.Request.Image != d.Request.Image || !backups.Created || !backups.Restored {
 		t.Fatalf("rollback incomplete: state=%s image=%s backups=%+v", got.State, got.Request.Image, backups)
+	}
+	if len(got.Request.Aliases) != 1 || got.Request.Aliases[0] != d.Request.Aliases[0] || !strings.Contains(docker.Spec.TraefikLabels["traefik.http.routers.cc123e4567e89b42d3a456426614174020.rule"], "Host(`lifecycle.example.com`)") {
+		t.Fatalf("upgrade did not preserve alias: deployment=%#v labels=%#v", got.Request.Aliases, docker.Spec.TraefikLabels)
 	}
 	if localData.PanelPurged {
 		t.Fatal("upgrade purged persistent panel storage")
@@ -218,6 +261,9 @@ func TestSoftDeletePreservesDatabaseAndPurgeRemovesIt(t *testing.T) {
 	soft, _ := repo.GetDeployment(context.Background(), d.Request.DeploymentID)
 	if soft.State != domain.StateDeleted || soft.CredentialsRef == "" || pg.Dropped {
 		t.Fatalf("soft delete lost data: %+v", soft)
+	}
+	if len(soft.Request.Aliases) != 1 || soft.Request.Aliases[0] != d.Request.Aliases[0] {
+		t.Fatalf("soft delete changed aliases: %#v", soft.Request.Aliases)
 	}
 	if localData.PanelPurged {
 		t.Fatal("soft delete purged persistent storage")
@@ -257,6 +303,16 @@ func TestStopAndStartPreservePersistentStorage(t *testing.T) {
 	got, err := repo.GetDeployment(context.Background(), d.Request.DeploymentID)
 	if err != nil || got.State != domain.StateActive {
 		t.Fatalf("state=%s err=%v", got.State, err)
+	}
+	if len(got.Request.Aliases) != 1 || got.Request.Aliases[0] != d.Request.Aliases[0] {
+		t.Fatalf("stop/start changed aliases: %#v", got.Request.Aliases)
+	}
+	if err = svc.execute(context.Background(), domain.Operation{ID: "restart", DeploymentID: d.Request.DeploymentID, Type: OpRestart}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetDeployment(context.Background(), d.Request.DeploymentID)
+	if err != nil || len(got.Request.Aliases) != 1 || got.Request.Aliases[0] != d.Request.Aliases[0] {
+		t.Fatalf("restart changed aliases: %#v err=%v", got.Request.Aliases, err)
 	}
 	if localData.PanelPurged {
 		t.Fatal("stop/start purged persistent storage")
@@ -299,7 +355,7 @@ func TestAdminResetPayloadIsEncryptedAndExecuted(t *testing.T) {
 
 func TestPanelAdminResetUsesInstallerFieldNames(t *testing.T) {
 	request := contracts.AdminResetRequest{AdminEmail: "owner@example.test", AdminPassword: "rotated-admin-password"}
-	panelJSON, err := json.Marshal(panelAdminReset{Email: request.AdminEmail, Password: request.AdminPassword})
+	panelJSON, err := json.Marshal(panelAdminReset{Email: request.AdminEmail, Password: request.AdminPassword}) //nolint:gosec // Test-only serialization verifies the protected secret payload shape.
 	if err != nil {
 		t.Fatal(err)
 	}

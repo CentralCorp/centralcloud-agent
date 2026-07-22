@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
+	"github.com/centralcorp/centralcloud-node-agent/pkg/contracts"
 	"github.com/docker/docker/api/types/network"
 )
 
@@ -55,5 +58,19 @@ func TestNetworkAddressFallbackIsDeterministic(t *testing.T) {
 
 	if got := networkAddress(networks, "missing"); got != "172.20.0.10" {
 		t.Fatalf("networkAddress() = %q, want address from alphabetically first network", got)
+	}
+}
+
+func TestContainerTmpfsIsWritableByNonRootPanel(t *testing.T) {
+	spec := domain.ContainerSpec{
+		Deployment: contracts.CreateDeploymentRequest{Resources: contracts.Resources{MemoryBytes: 64 << 20, CPULimit: 0.25}},
+		PidsLimit:  128,
+	}
+	host := containerHostConfig(spec, []string{"/host/storage:/app/storage"})
+	for _, path := range []string{"/tmp", "/run"} {
+		options := host.Tmpfs[path]
+		if !strings.Contains(options, "mode=1777") {
+			t.Fatalf("tmpfs %s must be writable by the non-root panel user: %q", path, options)
+		}
 	}
 }

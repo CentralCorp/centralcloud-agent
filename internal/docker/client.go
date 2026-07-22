@@ -221,7 +221,6 @@ func (c *Client) CreateContainer(ctx context.Context, s domain.ContainerSpec) (s
 	for k, v := range s.TraefikLabels {
 		labels[k] = v
 	}
-	pids := s.PidsLimit
 	binds := []string{s.StorageDirectory + ":/app/storage"}
 	names := make([]string, 0, len(s.SecretFiles))
 	for name := range s.SecretFiles {
@@ -242,13 +241,18 @@ func (c *Client) CreateContainer(ctx context.Context, s domain.ContainerSpec) (s
 	if secretDirectory != "" {
 		binds = append(binds, secretDirectory+":/run/secrets:ro")
 	}
-	resp, e := c.cli.ContainerCreate(ctx, &container.Config{Image: s.Deployment.Image, Env: env, Labels: labels, User: s.User}, &container.HostConfig{
+	resp, e := c.cli.ContainerCreate(ctx, &container.Config{Image: s.Deployment.Image, Env: env, Labels: labels, User: s.User}, containerHostConfig(s, binds), &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{s.FrontendNetwork: {}, s.BackendNetwork: {}}}, nil, name)
+	return resp.ID, e
+}
+
+func containerHostConfig(s domain.ContainerSpec, binds []string) *container.HostConfig {
+	pids := s.PidsLimit
+	return &container.HostConfig{
 		ReadonlyRootfs: true, SecurityOpt: []string{"no-new-privileges:true"}, CapDrop: []string{"ALL"},
 		Resources: container.Resources{Memory: s.Deployment.Resources.MemoryBytes, NanoCPUs: int64(s.Deployment.Resources.CPULimit * 1e9), PidsLimit: &pids},
-		Tmpfs:     map[string]string{"/tmp": "rw,noexec,nosuid,size=64m", "/run": "rw,noexec,nosuid,size=16m"},
+		Tmpfs:     map[string]string{"/tmp": "rw,noexec,nosuid,size=64m,mode=1777", "/run": "rw,noexec,nosuid,size=16m,mode=1777"},
 		Binds:     binds, RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyOnFailure, MaximumRetryCount: 3},
-	}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{s.FrontendNetwork: {}, s.BackendNetwork: {}}}, nil, name)
-	return resp.ID, e
+	}
 }
 func (c *Client) find(ctx context.Context, id string) (types.Container, error) {
 	list, e := c.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", "centralcloud.managed=true"), filters.Arg("label", "centralcloud.deployment_id="+id))})

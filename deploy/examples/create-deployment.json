@@ -2,6 +2,7 @@
   "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
   "project_id": "123e4567-e89b-42d3-a456-426614174001",
   "hostname": "example.cloud.centralcorp.fr",
+  "aliases": ["panel.example.com"],
   "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "environment": {},
   "resources": {

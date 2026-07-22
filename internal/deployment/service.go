@@ -115,6 +115,16 @@ func (s *Service) accepted(o domain.Operation) ([]byte, error) {
 	return json.Marshal(contracts.AcceptedOperation{OperationID: o.ID, DeploymentID: o.DeploymentID, Status: "queued"})
 }
 
+func (s *Service) acceptedCreate(o domain.Operation, aliases []string) ([]byte, error) {
+	if aliases == nil {
+		aliases = []string{}
+	}
+	return json.Marshal(contracts.AcceptedCreateOperation{
+		AcceptedOperation: contracts.AcceptedOperation{OperationID: o.ID, DeploymentID: o.DeploymentID, Status: "queued"},
+		Aliases:           aliases,
+	})
+}
+
 func (s *Service) SubmitCreate(ctx context.Context, r contracts.CreateDeploymentRequest, key, method, path string, raw []byte) ([]byte, error) {
 	key = strings.ToLower(key)
 	if e := domain.ValidateCreate(&r, s.cfg); e != nil {
@@ -201,7 +211,7 @@ func (s *Service) SubmitCreate(ctx context.Context, r contracts.CreateDeployment
 	if e = s.repo.CreateOperation(ctx, o); e != nil {
 		return nil, e
 	}
-	response, e := s.accepted(o)
+	response, e := s.acceptedCreate(o, r.Aliases)
 	if e == nil {
 		e = s.repo.PutIdempotency(ctx, key, hash, response)
 	}
@@ -413,7 +423,7 @@ func (s *Service) resetAdmin(ctx context.Context, o domain.Operation) error {
 	if err = json.Unmarshal([]byte(decrypted), &request); err != nil {
 		return fmt.Errorf("decode panel admin reset: %w", err)
 	}
-	panelJSON, err := json.Marshal(panelAdminReset{Email: request.AdminEmail, Password: request.AdminPassword})
+	panelJSON, err := json.Marshal(panelAdminReset{Email: request.AdminEmail, Password: request.AdminPassword}) //nolint:gosec // The secret is written only to the protected runtime secret file.
 	if err != nil {
 		return fmt.Errorf("encode panel admin reset: %w", err)
 	}
@@ -488,7 +498,11 @@ func (s *Service) provision(ctx context.Context, o domain.Operation) error {
 		return e
 	}
 	if e = s.step(ctx, o, "create_container", func() error {
-		_, e := s.docker.CreateContainer(ctx, s.spec(d, secretFiles, networks, storageDirectory))
+		spec, specErr := s.spec(d, secretFiles, networks, storageDirectory)
+		if specErr != nil {
+			return specErr
+		}
+		_, e := s.docker.CreateContainer(ctx, spec)
 		return e
 	}); e != nil {
 		return e
@@ -537,7 +551,7 @@ func (s *Service) materializeSecrets(d domain.Deployment, bundle permanentSecret
 		if err = json.Unmarshal([]byte(bootstrapJSON), &bootstrap); err != nil {
 			return nil, fmt.Errorf("decode panel bootstrap: %w", err)
 		}
-		panelJSON, err := json.Marshal(panelBootstrap{
+		panelJSON, err := json.Marshal(panelBootstrap{ //nolint:gosec // The secret is written only to the protected runtime secret file.
 			Name:     bootstrap.AdminName,
 			Email:    bootstrap.AdminEmail,
 			Password: bootstrap.AdminPassword,
@@ -560,7 +574,7 @@ func (s *Service) materializeSecrets(d domain.Deployment, bundle permanentSecret
 	return files, nil
 }
 
-func (s *Service) spec(d domain.Deployment, secretFiles map[string]string, networks domain.DeploymentNetworks, storageDirectory string) domain.ContainerSpec {
+func (s *Service) spec(d domain.Deployment, secretFiles map[string]string, networks domain.DeploymentNetworks, storageDirectory string) (domain.ContainerSpec, error) {
 	env := map[string]string{}
 	for k, v := range d.Request.Environment {
 		env[k] = v
@@ -583,7 +597,11 @@ func (s *Service) spec(d domain.Deployment, secretFiles map[string]string, netwo
 	env["APP_URL"] = "https://" + d.Request.Hostname
 	env["CENTRALPANEL_MODE"] = "centralcloud"
 	env["CLOUD_PROJECT_ID"] = d.Request.ProjectID
-	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFiles: secretFiles, StorageDirectory: storageDirectory, ManagementLabels: ManagementLabels(d.Request), TraefikLabels: TraefikLabels(d.Request, s.cfg, networks.Frontend), FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}
+	traefikLabels, err := validatedTraefikLabels(d.Request, s.cfg, networks.Frontend)
+	if err != nil {
+		return domain.ContainerSpec{}, err
+	}
+	return domain.ContainerSpec{Deployment: d.Request, Environment: env, SecretFiles: secretFiles, StorageDirectory: storageDirectory, ManagementLabels: ManagementLabels(d.Request), TraefikLabels: traefikLabels, FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: s.cfg.Docker.PanelUser, PidsLimit: s.cfg.Docker.PidsLimit}, nil
 }
 func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {
 	version := r.Image
@@ -593,13 +611,30 @@ func ManagementLabels(r contracts.CreateDeploymentRequest) map[string]string {
 	return map[string]string{"centralcloud.managed": "true", "centralcloud.deployment_id": r.DeploymentID, "centralcloud.project_id": r.ProjectID, "centralcloud.hostname": r.Hostname, "centralcloud.version": version}
 }
 func TraefikLabels(r contracts.CreateDeploymentRequest, c config.Config, frontendNetwork string) map[string]string {
+	labels, _ := validatedTraefikLabels(r, c, frontendNetwork)
+	return labels
+}
+
+func validatedTraefikLabels(r contracts.CreateDeploymentRequest, c config.Config, frontendNetwork string) (map[string]string, error) {
+	hosts := make([]string, 0, 1+len(r.Aliases))
+	hosts = append(hosts, r.Hostname)
+	hosts = append(hosts, r.Aliases...)
+	rules := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		if err := domain.ValidateDNSHostname(host); err != nil {
+			return nil, fmt.Errorf("render Traefik host %q: %w", host, err)
+		}
+		// ValidateDNSHostname restricts host to lowercase ASCII letters, digits,
+		// hyphens and dots, so it cannot terminate or escape this raw literal.
+		rules = append(rules, "Host(`"+host+"`)")
+	}
 	id := "cc" + strings.ReplaceAll(r.DeploymentID, "-", "")
-	labels := map[string]string{"traefik.enable": "true", "traefik.docker.network": frontendNetwork, "traefik.http.routers." + id + ".rule": "Host(`" + r.Hostname + "`)", "traefik.http.routers." + id + ".entrypoints": c.Traefik.Entrypoint, "traefik.http.services." + id + ".loadbalancer.server.port": "8080"}
+	labels := map[string]string{"traefik.enable": "true", "traefik.docker.network": frontendNetwork, "traefik.http.routers." + id + ".rule": strings.Join(rules, " || "), "traefik.http.routers." + id + ".entrypoints": c.Traefik.Entrypoint, "traefik.http.services." + id + ".loadbalancer.server.port": "8080"}
 	if c.Traefik.CertificateResolver != "" {
 		labels["traefik.http.routers."+id+".tls"] = "true"
 		labels["traefik.http.routers."+id+".tls.certresolver"] = c.Traefik.CertificateResolver
 	}
-	return labels
+	return labels, nil
 }
 func (s *Service) start(ctx context.Context, o domain.Operation) error {
 	d, e := s.repo.GetDeployment(ctx, o.DeploymentID)
@@ -693,7 +728,11 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 	}
 	secretFiles, e := s.materializeSecrets(d, secretBundle)
 	if e == nil {
-		_, e = s.docker.CreateContainer(ctx, s.spec(d, secretFiles, networks, storageDirectory))
+		var spec domain.ContainerSpec
+		spec, e = s.spec(d, secretFiles, networks, storageDirectory)
+		if e == nil {
+			_, e = s.docker.CreateContainer(ctx, spec)
+		}
 	}
 	if e == nil {
 		e = s.docker.StartContainer(ctx, d.Request.DeploymentID)
@@ -712,7 +751,10 @@ func (s *Service) upgrade(ctx context.Context, o domain.Operation) error {
 		}
 		d.Request.Image = oldImage
 		_ = s.repo.SaveDeployment(ctx, d)
-		_, re := s.docker.CreateContainer(ctx, s.spec(d, secretFiles, networks, storageDirectory))
+		spec, re := s.spec(d, secretFiles, networks, storageDirectory)
+		if re == nil {
+			_, re = s.docker.CreateContainer(ctx, spec)
+		}
 		if re == nil {
 			re = s.docker.StartContainer(ctx, d.Request.DeploymentID)
 		}

@@ -70,18 +70,19 @@ Teste Docker, PostgreSQL et SQLite.
 {
   "node_id": "123e4567-e89b-42d3-a456-426614174010",
   "node_name": "node-paris-01",
-  "agent_version": "1.0.0",
+  "agent_version": "1.1.0",
   "status": "ok",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "docker": "ok",
   "postgres": "ok",
-  "database": "ok"
+  "database": "ok",
+  "capabilities": ["hostname_aliases"]
 }
 ```
 
 Le statut global devient `degraded` et le code HTTP `503` si au moins un composant ne répond pas.
 
-`version` est conservé pour les clients existants ; `agent_version` contient la même valeur. `node_id` provient de `node.id` ou de l'identité générée une fois et persistée dans SQLite.
+`version` est conservé pour les clients existants ; `agent_version` contient la même valeur. `node_id` provient de `node.id` ou de l'identité générée une fois et persistée dans SQLite. Le Control Plane détecte les domaines personnalisés exclusivement par la capability `hostname_aliases`, jamais en comparant un numéro de version.
 
 ### `GET /v1/resources`
 
@@ -113,6 +114,7 @@ Corps complet :
   "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
   "project_id": "123e4567-e89b-42d3-a456-426614174001",
   "hostname": "example.cloud.centralcorp.fr",
+  "aliases": ["panel.example.com"],
   "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0",
   "environment": {},
   "resources": {
@@ -136,12 +138,24 @@ Corps complet :
 }
 ```
 
+Réponse `202` :
+
+```json
+{
+  "operation_id": "123e4567-e89b-42d3-a456-426614174099",
+  "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
+  "status": "queued",
+  "aliases": ["panel.example.com"]
+}
+```
+
 ### Validation des champs
 
 | Champ | Règle |
 |---|---|
 | `deployment_id`, `project_id` | UUID valides, normalisés en minuscules |
 | `hostname` | nom DNS valide, égal ou sous-domaine de `traefik.domain_suffix` |
+| `aliases` | tableau optionnel contenant zéro ou un hostname DNS ASCII ; l'alias est normalisé en minuscules, n'est pas limité à `traefik.domain_suffix` et doit différer de `hostname` |
 | `image` | dépôt exactement égal à `docker.panel_image_repository`; digest SHA-256 obligatoire si `require_image_digest=true` |
 | `environment` | clé présente dans `panel.allowed_environment_keys`, non réservée/non secrète, 128 entrées et 4096 caractères par valeur maximum |
 | `resources.memory_bytes` | au moins 64 Mio ; valeur par défaut si `0` |
@@ -157,12 +171,14 @@ Corps complet :
 
 Les variables PostgreSQL, `DATABASE_URL` et les variables internes comme `APP_KEY_FILE`, `PANEL_BOOTSTRAP_FILE` ou `PANEL_MANAGED` sont réservées. Il en va de même pour `APP_ENV`, `APP_URL`, `CENTRALPANEL_MODE` et `CLOUD_PROJECT_ID`, car l'agent les dérive des données validées et fournit respectivement `production`, `https://<hostname>`, `centralcloud` et le `project_id`. Les noms à sémantique secrète (`PASSWORD`, `TOKEN`, `SECRET`, `CREDENTIAL`, `KEY`, etc.) sont refusés même s'ils figurent par erreur dans l'allowlist. L'erreur cite uniquement la clé. Les secrets passent exclusivement par les fichiers protégés existants.
 
+Un alias fait au plus 253 caractères et chaque label 1 à 63 caractères. Seuls lettres ASCII, chiffres et tirets sont admis, sans tiret en début ou fin de label. IP, port, URL, wildcard, userinfo, chemin, query string, fragment, Unicode non punycodé, doublon de `hostname` et doublons du tableau sont refusés. Une requête historique sans `aliases` équivaut à `"aliases": []`. La réponse `202` de création inclut toujours `aliases`, y compris vide. Les alias participent au hash d'idempotence : changer uniquement ce tableau avec la même clé renvoie `409 conflict`.
+
 ### Fonctionnement interne
 
 1. vérification des limites de déploiement et de la mémoire disponible ;
 2. génération et chiffrement des secrets ;
 3. création du rôle et de la base PostgreSQL ;
-4. création de `centralcloud-fe-<id>` et `centralcloud-be-<id>`, vérification de leurs labels puis connexion de Traefik au frontend ;
+4. création de `centralcloud-fe-<id>` et `centralcloud-be-<id>`, vérification de leurs labels puis connexion de Traefik au frontend ; le routeur combine les matchers `Host("canonique") || Host("alias")` lorsqu'un alias existe ;
 5. téléchargement de l'image autorisée ;
 6. matérialisation temporaire des secrets en fichiers `0400` ;
 7. création/vérification du stockage propriétaire, montage sur `/app/storage`, puis création du conteneur sur ses deux réseaux dédiés ;
@@ -185,6 +201,7 @@ Le déploiement passe à l'état `active` lorsque toutes les étapes réussissen
       "deployment_id": "123e4567-e89b-42d3-a456-426614174000",
       "project_id": "123e4567-e89b-42d3-a456-426614174001",
       "hostname": "example.cloud.centralcorp.fr",
+      "aliases": ["panel.example.com"],
       "image": "ghcr.io/centralcorp-cloud/centralpanel-cloud:1.0.0",
       "state": "active",
       "resources": {"memory_bytes": 402653184, "cpu_limit": 0.5},
@@ -200,7 +217,7 @@ Le déploiement passe à l'état `active` lorsque toutes les étapes réussissen
 
 ### `GET /v1/deployments/{id}`
 
-Retourne le même objet pour un seul déploiement. Les secrets et les variables d'environnement ne sont pas exposés. Un identifiant inconnu renvoie `404`.
+Retourne le même objet pour un seul déploiement. `aliases` est toujours un tableau dans les réponses de création, de liste et de détail. Les secrets et les variables d'environnement ne sont pas exposés. Un identifiant inconnu renvoie `404`.
 
 États possibles :
 

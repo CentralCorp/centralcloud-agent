@@ -26,7 +26,7 @@ traefik:
   container_name: "centralcloud-traefik"
   domain_suffix: "cloud.centralcorp.fr"
   entrypoint: "websecure"
-  certificate_resolver: "letsencrypt"
+  certificate_resolver: "letsencrypt" # Traefik déduit le SAN canonique et l'alias de la règle Host du routeur.
 panel:
   allowed_environment_keys: []
   install_command: ["php", "artisan", "auto:install", "--bootstrap-file=/run/secrets/panel_bootstrap.json", "--no-interaction"]

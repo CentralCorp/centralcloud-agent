@@ -40,7 +40,7 @@ func (s *SQLite) Close() error                   { return s.db.Close() }
 func (s *SQLite) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 func (s *SQLite) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS deployments(
- deployment_id TEXT PRIMARY KEY, request_json BLOB NOT NULL, state TEXT NOT NULL,
+ deployment_id TEXT PRIMARY KEY, request_json BLOB NOT NULL, aliases_json BLOB NOT NULL DEFAULT '[]', state TEXT NOT NULL,
  credentials_ref TEXT NOT NULL DEFAULT '', encrypted_secret BLOB, failed_step TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operations(
  operation_id TEXT PRIMARY KEY, deployment_id TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, status TEXT NOT NULL,
@@ -62,9 +62,33 @@ CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,deployment
 		}
 	}
 	if err == nil {
+		err = s.migrateDeploymentAliases(ctx)
+	}
+	if err == nil {
 		_, err = s.db.ExecContext(ctx, `UPDATE operations SET status='queued' WHERE status='running'`)
 	}
 	return err
+}
+
+func (s *SQLite) migrateDeploymentAliases(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('deployments') WHERE name='aliases_json'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err = tx.ExecContext(ctx, `ALTER TABLE deployments ADD COLUMN aliases_json BLOB NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE deployments SET aliases_json='[]' WHERE aliases_json IS NULL OR length(aliases_json)=0`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) CreateDeployment(ctx context.Context, d domain.Deployment) error {
@@ -77,7 +101,11 @@ func (s *SQLite) CreateDeployment(ctx context.Context, d domain.Deployment) erro
 		d.CreatedAt = now
 	}
 	d.UpdatedAt = now
-	_, err = s.db.ExecContext(ctx, `INSERT INTO deployments(deployment_id,request_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, d.Request.DeploymentID, b, d.State, d.CredentialsRef, d.EncryptedSecret, d.EncryptedBootstrap, d.FailedStep, d.CreatedAt.Format(time.RFC3339Nano), d.UpdatedAt.Format(time.RFC3339Nano))
+	aliases, err := json.Marshal(nonNilAliases(d.Request.Aliases))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO deployments(deployment_id,request_json,aliases_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, d.Request.DeploymentID, b, aliases, d.State, d.CredentialsRef, d.EncryptedSecret, d.EncryptedBootstrap, d.FailedStep, d.CreatedAt.Format(time.RFC3339Nano), d.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil && isConstraint(err) {
 		return domain.ErrConflict
 	}
@@ -88,7 +116,11 @@ func (s *SQLite) SaveDeployment(ctx context.Context, d domain.Deployment) error 
 	if e != nil {
 		return e
 	}
-	r, e := s.db.ExecContext(ctx, `UPDATE deployments SET request_json=?,state=?,credentials_ref=?,encrypted_secret=?,encrypted_bootstrap=?,failed_step=?,updated_at=? WHERE deployment_id=?`, b, d.State, d.CredentialsRef, d.EncryptedSecret, d.EncryptedBootstrap, d.FailedStep, s.clock.Now().Format(time.RFC3339Nano), d.Request.DeploymentID)
+	aliases, e := json.Marshal(nonNilAliases(d.Request.Aliases))
+	if e != nil {
+		return e
+	}
+	r, e := s.db.ExecContext(ctx, `UPDATE deployments SET request_json=?,aliases_json=?,state=?,credentials_ref=?,encrypted_secret=?,encrypted_bootstrap=?,failed_step=?,updated_at=? WHERE deployment_id=?`, b, aliases, d.State, d.CredentialsRef, d.EncryptedSecret, d.EncryptedBootstrap, d.FailedStep, s.clock.Now().Format(time.RFC3339Nano), d.Request.DeploymentID)
 	if e == nil {
 		n, _ := r.RowsAffected()
 		if n == 0 {
@@ -99,9 +131,9 @@ func (s *SQLite) SaveDeployment(ctx context.Context, d domain.Deployment) error 
 }
 func scanDeployment(row interface{ Scan(...any) error }) (domain.Deployment, error) {
 	var d domain.Deployment
-	var b []byte
+	var b, aliases []byte
 	var state, created, updated string
-	err := row.Scan(&b, &state, &d.CredentialsRef, &d.EncryptedSecret, &d.EncryptedBootstrap, &d.FailedStep, &created, &updated)
+	err := row.Scan(&b, &aliases, &state, &d.CredentialsRef, &d.EncryptedSecret, &d.EncryptedBootstrap, &d.FailedStep, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, domain.ErrNotFound
 	}
@@ -111,16 +143,20 @@ func scanDeployment(row interface{ Scan(...any) error }) (domain.Deployment, err
 	if err = json.Unmarshal(b, &d.Request); err != nil {
 		return d, err
 	}
+	if err = json.Unmarshal(aliases, &d.Request.Aliases); err != nil {
+		return d, fmt.Errorf("decode deployment aliases: %w", err)
+	}
+	d.Request.Aliases = nonNilAliases(d.Request.Aliases)
 	d.State = domain.State(state)
 	d.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	d.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return d, nil
 }
 func (s *SQLite) GetDeployment(ctx context.Context, id string) (domain.Deployment, error) {
-	return scanDeployment(s.db.QueryRowContext(ctx, `SELECT request_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at FROM deployments WHERE deployment_id=?`, id))
+	return scanDeployment(s.db.QueryRowContext(ctx, `SELECT request_json,aliases_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at FROM deployments WHERE deployment_id=?`, id))
 }
 func (s *SQLite) ListDeployments(ctx context.Context) ([]domain.Deployment, error) {
-	rows, e := s.db.QueryContext(ctx, `SELECT request_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at FROM deployments ORDER BY created_at`)
+	rows, e := s.db.QueryContext(ctx, `SELECT request_json,aliases_json,state,credentials_ref,encrypted_secret,encrypted_bootstrap,failed_step,created_at,updated_at FROM deployments ORDER BY created_at`)
 	if e != nil {
 		return nil, e
 	}
@@ -135,6 +171,13 @@ func (s *SQLite) ListDeployments(ctx context.Context) ([]domain.Deployment, erro
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+func nonNilAliases(aliases []string) []string {
+	if aliases == nil {
+		return []string{}
+	}
+	return aliases
 }
 func (s *SQLite) UpdateState(ctx context.Context, id string, to domain.State, failedStep string) error {
 	tx, e := s.db.BeginTx(ctx, nil)

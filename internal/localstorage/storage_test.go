@@ -21,7 +21,7 @@ func testManager(t *testing.T) *Manager {
 func TestEnsurePanelPreservesExistingDataAndCreatesMarker(t *testing.T) {
 	m := testManager(t)
 	path := filepath.Join(m.panelRoot, testDeploymentID)
-	if err := os.Mkdir(path, 0755); err != nil {
+	if err := os.Mkdir(path, 0755); err != nil { //nolint:gosec // The permissive fixture verifies EnsurePanel tightens an existing directory.
 		t.Fatal(err)
 	}
 	data := filepath.Join(path, "customer-data")
@@ -35,7 +35,7 @@ func TestEnsurePanelPreservesExistingDataAndCreatesMarker(t *testing.T) {
 	if got != path {
 		t.Fatalf("path=%q want=%q", got, path)
 	}
-	if content, err := os.ReadFile(data); err != nil || string(content) != "keep" {
+	if content, err := os.ReadFile(data); err != nil || string(content) != "keep" { //nolint:gosec // data is a test-owned path below t.TempDir.
 		t.Fatalf("existing data changed: %q %v", content, err)
 	}
 	info, err := os.Stat(path)

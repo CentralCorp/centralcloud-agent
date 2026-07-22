@@ -10,6 +10,7 @@ Agent système Go installé sur chaque VPS CentralCloud. Il reçoit les ordres d
 - Secrets PostgreSQL générés par l’agent, chiffrés AES-256-GCM au repos et montés en fichier `0400`; aucun mot de passe n’est renvoyé.
 - Conteneurs non privilégiés, sans port hôte ni socket Docker, capacités supprimées, rootfs read-only, tmpfs, limites CPU/RAM/PID et `no-new-privileges`.
 - Deux réseaux Docker propriétaires par déploiement ; aucun réseau panel-à-panel partagé, Traefik rejoint uniquement chaque frontend nécessaire.
+- Un alias DNS personnalisé optionnel par déploiement, persisté dans SQLite et routé/TLS par le même routeur Traefik après validation CNAME par le Control Plane.
 - Stockage persistant marqué et supprimable uniquement après validation stricte du chemin et de la propriété.
 - Logs JSON structurés et nettoyage des mots de passe, tokens, DSN et en-têtes sensibles.
 
@@ -21,7 +22,7 @@ Go 1.26.5 est épinglé. Si Go n’est pas installé, les cibles Make utilisent 
 
 ```sh
 make fmt-check vet test test-race build-all
-make docker-build VERSION=1.0.0
+make docker-build VERSION=1.1.0
 ```
 
 Le binaire Linux statique est `dist/centralcloud-agent-linux-<arch>`.
@@ -99,7 +100,7 @@ curl -sS http://127.0.0.1:9443/v1/deployments \
 
 Pour une purge, demander d’abord un jeton, puis envoyer `X-Purge-Token` avec `DELETE ...?mode=purge`. Le jeton expire après cinq minutes et n’est utilisable qu’une fois. Une suppression soft conserve base, rôle, secrets chiffrés et stockage ; la purge retire aussi réseaux, PostgreSQL, stockage, backups et état principal SQLite.
 
-Les réponses `/v1/health` et `/v1/resources` contiennent `node_id`; la santé expose aussi `node_name` et `agent_version`. Le Control Plane les sonde périodiquement et reste seul responsable du choix du node.
+Les réponses `/v1/health` et `/v1/resources` contiennent `node_id`; la santé expose aussi `node_name`, `agent_version` et `capabilities`. La capability `hostname_aliases` signale le support des domaines personnalisés sans dépendance à un numéro de version. Le Control Plane les sonde périodiquement et reste seul responsable du choix du node.
 
 ## Développement et tests isolés
 
@@ -115,6 +116,6 @@ Le Compose de test publie PostgreSQL et Traefik uniquement sur loopback et utili
 
 ## Reprise et opérations
 
-SQLite fonctionne en WAL et stocke déploiements, opérations, étapes et réponses idempotentes. Au redémarrage, une opération restée `running` est remise en file et chaque étape externe est rejouée idempotemment. Un upgrade crée un dump logique chiffré via un conteneur PostgreSQL utilitaire, conserve deux dumps pendant sept jours et restaure base et ancienne image si le nouveau healthcheck échoue.
+SQLite fonctionne en WAL et stocke déploiements, alias, opérations, étapes et réponses idempotentes. Au redémarrage, une opération restée `running` est remise en file et chaque étape externe est rejouée idempotemment. Un upgrade crée un dump logique chiffré via un conteneur PostgreSQL utilitaire, conserve deux dumps pendant sept jours et restaure base et ancienne image si le nouveau healthcheck échoue.
 
 Les anciens panels utilisant les réseaux partagés doivent être migrés de façon contrôlée par soft delete puis recreate avec le même `deployment_id`. Cette opération préserve PostgreSQL et `/app/storage`. La V1 reste locale au node : sauvegarder extérieurement PostgreSQL, les panels, `state.db`, la configuration et la clé maître séparée.

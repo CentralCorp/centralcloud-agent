@@ -57,8 +57,9 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	if err = os.WriteFile(secret, []byte(password), 0400); err != nil {
 		t.Fatal(err)
 	}
-	r := contracts.CreateDeploymentRequest{DeploymentID: id, ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "integration.cloud.centralcorp.fr", Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:integration", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: db, Username: user}, Healthcheck: contracts.Healthcheck{Path: "/up", TimeoutSeconds: 30}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
-	spec := domain.ContainerSpec{Deployment: r, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(r), TraefikLabels: deployment.TraefikLabels(r, c, networks.Frontend), FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: "65532:65532", PidsLimit: 64}
+	r := contracts.CreateDeploymentRequest{DeploymentID: id, ProjectID: "123e4567-e89b-42d3-a456-426614174001", Hostname: "integration.cloud.centralcorp.fr", Aliases: []string{"integration.example.com"}, Image: "ghcr.io/centralcorp-cloud/centralpanel-cloud:integration", Resources: contracts.Resources{MemoryBytes: 128 << 20, CPULimit: .25}, Database: contracts.Database{DatabaseName: db, Username: user}, Healthcheck: contracts.Healthcheck{Path: "/up", TimeoutSeconds: 30}, Bootstrap: contracts.Bootstrap{AdminName: "Owner", AdminEmail: "owner@example.test", AdminPassword: "long-bootstrap-password", InternalSecret: "12345678901234567890123456789012"}}
+	traefikLabels := deployment.TraefikLabels(r, c, networks.Frontend)
+	spec := domain.ContainerSpec{Deployment: r, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(r), TraefikLabels: traefikLabels, FrontendNetwork: networks.Frontend, BackendNetwork: networks.Backend, User: "65532:65532", PidsLimit: 64}
 	containerID, err := d.CreateContainer(ctx, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +91,9 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	if inspected.Config.Labels["centralcloud.deployment_id"] != id || inspected.Config.Labels["traefik.enable"] != "true" {
 		t.Fatalf("missing labels: %#v", inspected.Config.Labels)
 	}
+	if got := inspected.Config.Labels["traefik.http.routers.cc123e4567e89b42d3a456426614174099.rule"]; got != "Host(`integration.cloud.centralcorp.fr`) || Host(`integration.example.com`)" {
+		t.Fatalf("unexpected alias router rule: %q", got)
+	}
 	frontend, err := raw.NetworkInspect(ctx, networks.Frontend, network.InspectOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +117,9 @@ func TestIsolatedDockerAndPostgresLifecycle(t *testing.T) {
 	secondRequest.DeploymentID = secondID
 	secondRequest.ProjectID = "123e4567-e89b-42d3-a456-426614174097"
 	secondRequest.Hostname = "integration-second.cloud.centralcorp.fr"
-	secondSpec := domain.ContainerSpec{Deployment: secondRequest, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(secondRequest), TraefikLabels: deployment.TraefikLabels(secondRequest, c, secondNetworks.Frontend), FrontendNetwork: secondNetworks.Frontend, BackendNetwork: secondNetworks.Backend, User: "65532:65532", PidsLimit: 64}
+	secondRequest.Aliases = nil
+	secondTraefikLabels := deployment.TraefikLabels(secondRequest, c, secondNetworks.Frontend)
+	secondSpec := domain.ContainerSpec{Deployment: secondRequest, Environment: map[string]string{"PGPASSWORD_FILE": "/run/secrets/postgres_password"}, SecretFiles: map[string]string{"postgres_password": secret}, StorageDirectory: t.TempDir(), ManagementLabels: deployment.ManagementLabels(secondRequest), TraefikLabels: secondTraefikLabels, FrontendNetwork: secondNetworks.Frontend, BackendNetwork: secondNetworks.Backend, User: "65532:65532", PidsLimit: 64}
 	if _, err = d.CreateContainer(ctx, secondSpec); err != nil {
 		t.Fatal(err)
 	}

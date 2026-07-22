@@ -240,7 +240,7 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, dst any) ([]by
 	return b, true
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	resp := contracts.HealthResponse{NodeID: s.cfg.Node.ID, NodeName: s.cfg.Node.Name, AgentVersion: Version, Status: "ok", Version: Version, Docker: "ok", Postgres: "ok", Database: "ok"}
+	resp := contracts.HealthResponse{NodeID: s.cfg.Node.ID, NodeName: s.cfg.Node.Name, AgentVersion: Version, Status: "ok", Version: Version, Docker: "ok", Postgres: "ok", Database: "ok", Capabilities: []string{"hostname_aliases"}}
 	status := 200
 	if e := s.docker.Ping(r.Context()); e != nil {
 		resp.Docker = "error"
@@ -281,7 +281,8 @@ func (s *Server) resource(w http.ResponseWriter, r *http.Request) {
 	s.write(w, 200, v)
 }
 func convert(d domain.Deployment) contracts.Deployment {
-	return contracts.Deployment{DeploymentID: d.Request.DeploymentID, ProjectID: d.Request.ProjectID, Hostname: d.Request.Hostname, Image: d.Request.Image, State: string(d.State), Resources: d.Request.Resources, Database: d.Request.Database, Healthcheck: d.Request.Healthcheck, CredentialsRef: d.CredentialsRef, FailedStep: d.FailedStep, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
+	aliases := append([]string{}, d.Request.Aliases...)
+	return contracts.Deployment{DeploymentID: d.Request.DeploymentID, ProjectID: d.Request.ProjectID, Hostname: d.Request.Hostname, Aliases: aliases, Image: d.Request.Image, State: string(d.State), Resources: d.Request.Resources, Database: d.Request.Database, Healthcheck: d.Request.Healthcheck, CredentialsRef: d.CredentialsRef, FailedStep: d.FailedStep, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
 }
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	ds, e := s.service.ListDeployments(r.Context())

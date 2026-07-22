@@ -20,7 +20,7 @@ En production, l'API doit fonctionner en mTLS avec TLS 1.3. Le mode token est r�
 - PostgreSQL accessible depuis l'hôte ;
 - un rôle PostgreSQL provisionneur capable de créer/supprimer des rôles et bases ;
 - Traefik configuré avec le provider Docker et l'entrypoint attendu ;
-- un enregistrement DNS couvrant les hôtes sous `traefik.domain_suffix` ;
+- un enregistrement DNS couvrant les hôtes sous `traefik.domain_suffix` et, pour chaque domaine personnalisé, un CNAME validé par le Control Plane avant l'appel Agent ;
 - une PKI fournissant le certificat serveur, sa clé privée et la CA des clients ;
 - l'image CentralPanel disponible dans le dépôt autorisé ;
 - Go 1.26.x ou Docker pour construire le binaire.
@@ -45,7 +45,7 @@ dist/centralcloud-agent-linux-arm64
 Pour construire une image OCI :
 
 ```sh
-make docker-build VERSION=1.0.0
+make docker-build VERSION=1.1.0
 ```
 
 L'image finale est basée sur `distroless`, fonctionne avec l'UID/GID `10001:10001` et lance :
@@ -139,6 +139,8 @@ Le fichier principal est `/etc/centralcloud-agent/config.yaml`. Une base complè
 | `postgres` | `administrator_*` | Connexion du provisionneur ; le mot de passe vient d'un fichier |
 | `traefik` | `domain_suffix` | Suffixe DNS autorisé pour les panels |
 | `traefik` | `container_name` | Nom exact du conteneur Traefik connecté aux frontends dédiés |
+| `traefik` | `entrypoint` | Entrypoint commun utilisé par le hostname canonique et son alias |
+| `traefik` | `certificate_resolver` | Resolver TLS ; Traefik déduit les domaines du ou des matchers `Host` |
 | `limits` | `maximum_deployments` | Capacité logique maximale du nœud |
 | `limits` | `maximum_concurrent_operations` | Nombre de workers asynchrones |
 | `panel` | `install_command` | Installation initiale exécutée sans shell après disponibilité de `/up` |
@@ -245,6 +247,8 @@ Avec `require_image_digest: true`, le Control Plane doit envoyer le digest d'une
 
 Traefik doit utiliser le provider Docker avec `exposedByDefault=false`. L'agent crée `centralcloud-fe-<deployment_id>` et `centralcloud-be-<deployment_id>`, connecte dynamiquement le conteneur `traefik.container_name` au frontend et configure `traefik.docker.network` sur ce réseau. Aucun port CentralPanel n'est publié. Un DNS wildcard doit couvrir `*.traefik.domain_suffix`.
 
+Avec un alias, la règle du même routeur combine `Host("canonique") || Host("alias")`. L'entrypoint et `certificate_resolver` restent ceux de la configuration ; Traefik demande ainsi un certificat couvrant les deux noms à partir de la règle. Sans resolver, l'agent conserve exactement le comportement historique et n'ajoute aucun label TLS. Le CNAME personnalisé doit déjà pointer vers le hostname canonique et avoir été validé par le Control Plane. L'Agent ne résout aucun DNS et aucun nouveau secret n'est nécessaire.
+
 Le compte PostgreSQL configuré est un compte d'administration technique. Chaque panel reçoit ensuite son propre rôle sans privilèges élevés (`NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOINHERIT`, `NOREPLICATION`) et sa propre base. PostgreSQL doit écouter sur l'hôte et sur les gateways Docker nécessaires, jamais sur Internet ; `pg_hba.conf` doit limiter les plages Docker et les rôles autorisés. `postgres.panel_host` peut remplacer la gateway découverte si l'infrastructure utilise une adresse dédiée.
 
 ## 9. Démarrer et vérifier
@@ -282,7 +286,7 @@ sudo install -m 0755 dist/centralcloud-agent-linux-amd64 \
 sudo systemctl start centralcloud-agent
 ```
 
-La base SQLite passe automatiquement en mode WAL et applique son schéma au démarrage. Toute opération restée `running` est replacée en file `queued`, puis reprise par les workers.
+La base SQLite passe automatiquement en mode WAL et applique son schéma au démarrage. La migration transactionnelle des alias ajoute `deployments.aliases_json` si nécessaire et initialise les déploiements existants à `[]`. Toute opération restée `running` est replacée en file `queued`, puis reprise par les workers.
 
 Avant une mise à jour importante, sauvegarder au minimum :
 
