@@ -79,6 +79,7 @@ func New(c config.Config, svc *deployment.Service, repo domain.StateRepository, 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
+	mux.HandleFunc("GET /v1/ready", s.ready)
 	mux.HandleFunc("GET /v1/resources", s.resource)
 	mux.HandleFunc("GET /v1/deployments", s.list)
 	mux.HandleFunc("POST /v1/deployments", s.create)
@@ -93,7 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/deployments/{id}/logs", s.logs)
 	mux.HandleFunc("GET /v1/operations/{id}", s.operation)
 	mux.Handle("GET /metrics", promhttp.Handler())
-	for _, pattern := range []string{"/v1/health", "/v1/resources", "/v1/deployments", "/v1/deployments/{id}", "/v1/deployments/{id}/start", "/v1/deployments/{id}/stop", "/v1/deployments/{id}/restart", "/v1/deployments/{id}/upgrade", "/v1/deployments/{id}/admin-reset", "/v1/deployments/{id}/purge-token", "/v1/deployments/{id}/logs", "/v1/operations/{id}", "/metrics"} {
+	for _, pattern := range []string{"/v1/health", "/v1/ready", "/v1/resources", "/v1/deployments", "/v1/deployments/{id}", "/v1/deployments/{id}/start", "/v1/deployments/{id}/stop", "/v1/deployments/{id}/restart", "/v1/deployments/{id}/upgrade", "/v1/deployments/{id}/admin-reset", "/v1/deployments/{id}/purge-token", "/v1/deployments/{id}/logs", "/v1/operations/{id}", "/metrics"} {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 		})
@@ -240,7 +241,7 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, dst any) ([]by
 	return b, true
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	resp := contracts.HealthResponse{NodeID: s.cfg.Node.ID, NodeName: s.cfg.Node.Name, AgentVersion: Version, Status: "ok", Version: Version, Docker: "ok", Postgres: "ok", Database: "ok", Capabilities: []string{"hostname_aliases"}}
+	resp := contracts.HealthResponse{NodeID: s.cfg.Node.ID, NodeName: s.cfg.Node.Name, AgentVersion: Version, ProtocolVersion: ProtocolVersion, Commit: Commit, BuildDate: BuildDate, Status: "ok", Version: Version, Docker: "ok", Postgres: "ok", Database: "ok", Capabilities: []string{"hostname_aliases", "readiness_v1"}}
 	status := 200
 	if e := s.docker.Ping(r.Context()); e != nil {
 		resp.Docker = "error"
@@ -266,7 +267,29 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	s.write(w, status, resp)
 }
 
-var Version = "dev"
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	resp := contracts.ReadyResponse{NodeID: s.cfg.Node.ID, NodeName: s.cfg.Node.Name, AgentVersion: Version, ProtocolVersion: ProtocolVersion, Commit: Commit, BuildDate: BuildDate, Status: "ready"}
+	if e := s.docker.Ping(r.Context()); e != nil {
+		s.writeError(w, r, http.StatusServiceUnavailable, "docker_unavailable", "Docker is unavailable", nil)
+		return
+	}
+	if e := s.postgres.Ping(r.Context()); e != nil {
+		s.writeError(w, r, http.StatusServiceUnavailable, "postgres_unavailable", "PostgreSQL is unavailable", nil)
+		return
+	}
+	if e := s.repo.Ping(r.Context()); e != nil {
+		s.writeError(w, r, http.StatusServiceUnavailable, "state_unavailable", "Agent state is unavailable", nil)
+		return
+	}
+	s.write(w, http.StatusOK, resp)
+}
+
+var (
+	Version         = "dev"
+	Commit          = "unknown"
+	BuildDate       = "unknown"
+	ProtocolVersion = "1"
+)
 
 func (s *Server) resource(w http.ResponseWriter, r *http.Request) {
 	v, e := s.resources.Collect(r.Context())

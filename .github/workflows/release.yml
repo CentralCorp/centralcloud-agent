@@ -1,0 +1,60 @@
+name: signed release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version: 1.26.5, cache: true}
+      - run: go test ./...
+      - name: Build deterministic binaries
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          build_date="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build -buildvcs=false -trimpath \
+              -ldflags="-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.buildDate=${build_date} -X main.protocolVersion=1" \
+              -o "dist/centralcloud-agent_${version}_linux_${arch}" ./cmd/agent
+          done
+      - name: Generate signed manifest
+        shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.AGENT_RELEASE_ED25519_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "${RELEASE_PRIVATE_KEY}" ]] || { echo "AGENT_RELEASE_ED25519_PRIVATE_KEY is required" >&2; exit 1; }
+          umask 077
+          key_file="${RUNNER_TEMP}/agent-release.key"
+          printf '%s' "${RELEASE_PRIVATE_KEY}" > "${key_file}"
+          version="${GITHUB_REF_NAME#v}"
+          amd64_sum="$(sha256sum "dist/centralcloud-agent_${version}_linux_amd64" | cut -d' ' -f1)"
+          arm64_sum="$(sha256sum "dist/centralcloud-agent_${version}_linux_arm64" | cut -d' ' -f1)"
+          go run ./cmd/releasectl generate --version "${version}" \
+            --published-at "$(git show -s --format=%cI "${GITHUB_SHA}")" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            --amd64-sha256 "${amd64_sum}" --arm64-sha256 "${arm64_sum}" \
+            --output dist/agent-release-manifest.json
+          go run ./cmd/releasectl sign --key-file "${key_file}" \
+            --input dist/agent-release-manifest.json --output dist/agent-release-manifest.json.sig
+          rm -f "${key_file}"
+          (cd dist && sha256sum centralcloud-agent_* > checksums.txt)
+      - uses: anchore/sbom-action@v0
+        with:
+          path: dist
+          output-file: dist/sbom.spdx.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/centralcloud-agent_*
+            dist/checksums.txt
+            dist/agent-release-manifest.json
+            dist/agent-release-manifest.json.sig
+            dist/sbom.spdx.json

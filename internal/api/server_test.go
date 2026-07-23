@@ -111,7 +111,7 @@ func TestMutationRejectsMissingReplayHeaders(t *testing.T) {
 
 func TestHealthIncludesPersistentNodeIdentity(t *testing.T) {
 	h := testServer(t, "token").Handler()
-	for _, path := range []string{"/v1/health", "/v1/resources"} {
+	for _, path := range []string{"/v1/health", "/v1/ready", "/v1/resources"} {
 		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
 		r.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 		w := httptest.NewRecorder()
@@ -123,14 +123,17 @@ func TestHealthIncludesPersistentNodeIdentity(t *testing.T) {
 		if response["node_id"] != "123e4567-e89b-42d3-a456-426614174000" {
 			t.Fatalf("unexpected node identity for %s: %#v", path, response)
 		}
-		if path == "/v1/health" && (response["node_name"] != "node-test-01" || response["agent_version"] != response["version"]) {
+		if path == "/v1/health" && (response["node_name"] != "node-test-01" || response["agent_version"] != response["version"] || response["protocol_version"] != "1") {
 			t.Fatalf("unexpected health identity: %#v", response)
 		}
 		if path == "/v1/health" {
 			capabilities, ok := response["capabilities"].([]any)
-			if !ok || len(capabilities) != 1 || capabilities[0] != "hostname_aliases" {
+			if !ok || len(capabilities) != 2 || capabilities[0] != "hostname_aliases" || capabilities[1] != "readiness_v1" {
 				t.Fatalf("unexpected health capabilities: %#v", response)
 			}
+		}
+		if path == "/v1/ready" && (response["status"] != "ready" || response["protocol_version"] != "1") {
+			t.Fatalf("unexpected readiness response: %#v", response)
 		}
 	}
 }

@@ -86,15 +86,28 @@ type Deployment struct {
 }
 
 type HealthResponse struct {
-	NodeID       string   `json:"node_id"`
-	NodeName     string   `json:"node_name"`
-	AgentVersion string   `json:"agent_version"`
-	Status       string   `json:"status"`
-	Version      string   `json:"version"`
-	Docker       string   `json:"docker"`
-	Postgres     string   `json:"postgres"`
-	Database     string   `json:"database"`
-	Capabilities []string `json:"capabilities"`
+	NodeID          string   `json:"node_id"`
+	NodeName        string   `json:"node_name"`
+	AgentVersion    string   `json:"agent_version"`
+	ProtocolVersion string   `json:"protocol_version"`
+	Commit          string   `json:"commit,omitempty"`
+	BuildDate       string   `json:"build_date,omitempty"`
+	Status          string   `json:"status"`
+	Version         string   `json:"version"`
+	Docker          string   `json:"docker"`
+	Postgres        string   `json:"postgres"`
+	Database        string   `json:"database"`
+	Capabilities    []string `json:"capabilities"`
+}
+
+type ReadyResponse struct {
+	NodeID          string `json:"node_id"`
+	NodeName        string `json:"node_name"`
+	AgentVersion    string `json:"agent_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	Commit          string `json:"commit,omitempty"`
+	BuildDate       string `json:"build_date,omitempty"`
+	Status          string `json:"status"`
 }
 
 type ResourceResponse struct {

@@ -32,21 +32,58 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var version = "1.1.0"
+var (
+	version         = "dev"
+	commit          = "unknown"
+	buildDate       = "unknown"
+	protocolVersion = "1"
+)
 
 func main() {
-	configPath := flag.String("config", "/etc/centralcloud-agent/config.yaml", "configuration file")
-	showVersion := flag.Bool("version", false, "print version")
-	flag.Parse()
-	if *showVersion {
-		fmt.Println(version)
+	command, configPath, err := parseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if command == "version" {
+		fmt.Printf("centralcloud-agent %s commit=%s build_date=%s protocol_version=%s\n", version, commit, buildDate, protocolVersion)
+		return
+	}
+	if command == "validate-config" {
+		if _, err := config.Load(configPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("configuration valid")
 		return
 	}
 	log := logging.New(slog.LevelInfo)
-	if e := run(*configPath, log); e != nil {
+	if e := run(configPath, log); e != nil {
 		log.Error("agent stopped", "error", e)
 		os.Exit(1)
 	}
+}
+
+func parseArgs(args []string) (string, string, error) {
+	command := "serve"
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve", "version", "validate-config":
+			command = args[0]
+			args = args[1:]
+		case "--version", "-version":
+			return "version", "", nil
+		}
+	}
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	configPath := flags.String("config", "/etc/centralcloud-agent/config.yaml", "configuration file")
+	if e := flags.Parse(args); e != nil {
+		return "", "", e
+	}
+	if flags.NArg() != 0 {
+		return "", "", fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	return command, *configPath, nil
 }
 func run(path string, log *slog.Logger) error {
 	c, e := config.Load(path)
@@ -102,7 +139,7 @@ func run(path string, log *slog.Logger) error {
 	m := ccmetrics.New(registry)
 	collector := resources.New(c.Storage.DatabaseFile, repo, c.Node.ID)
 	svc := deployment.New(c, repo, docker, pg, checker, secrets, backups, localData, collector, domain.UUIDGenerator{}, clock, log, m)
-	api.Version = version
+	api.Version, api.Commit, api.BuildDate, api.ProtocolVersion = version, commit, buildDate, protocolVersion
 	handler, e := api.New(c, svc, repo, docker, pg, collector, m, log)
 	if e != nil {
 		return e

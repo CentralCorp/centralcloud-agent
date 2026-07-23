@@ -6,8 +6,8 @@ import (
 )
 
 func TestRedact(t *testing.T) {
-	got := Redact("password=hunter2 token: abc authorization=BearerXYZ")
-	if strings.Contains(got, "hunter2") || strings.Contains(got, "BearerXYZ") || strings.Contains(got, " abc") {
+	got := Redact("password=hunter2 token: abc authorization=BearerXYZ Authorization: Bearer separated-token")
+	if strings.Contains(got, "hunter2") || strings.Contains(got, "BearerXYZ") || strings.Contains(got, "separated-token") || strings.Contains(got, " abc") {
 		t.Fatalf("secret leaked: %s", got)
 	}
 }

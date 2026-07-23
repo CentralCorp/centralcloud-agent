@@ -38,8 +38,8 @@ make fmt-check vet test test-race build-all
 Les artefacts statiques sont générés dans :
 
 ```text
-dist/centralcloud-agent-linux-amd64
-dist/centralcloud-agent-linux-arm64
+dist/centralcloud-agent_<version>_linux_amd64
+dist/centralcloud-agent_<version>_linux_arm64
 ```
 
 Pour construire une image OCI :
@@ -59,7 +59,7 @@ L'image finale est basée sur `distroless`, fonctionne avec l'UID/GID `10001:100
 Choisir le binaire correspondant à l'architecture, puis lancer l'installateur depuis la racine du dépôt :
 
 ```sh
-sudo deploy/install.sh dist/centralcloud-agent-linux-amd64
+sudo deploy/install.sh dist/centralcloud-agent_<version>_linux_amd64
 ```
 
 L'installateur :
@@ -281,7 +281,7 @@ Une réponse `200` indique que Docker, PostgreSQL et SQLite répondent. Une rép
 
 ```sh
 sudo systemctl stop centralcloud-agent
-sudo install -m 0755 dist/centralcloud-agent-linux-amd64 \
+sudo install -m 0755 dist/centralcloud-agent_<version>_linux_amd64 \
   /usr/local/bin/centralcloud-agent
 sudo systemctl start centralcloud-agent
 ```

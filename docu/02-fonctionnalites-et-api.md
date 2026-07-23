@@ -42,6 +42,7 @@ Il faut ensuite interroger `GET /v1/operations/{operation_id}`. Une seule opéra
 | Méthode | Endpoint | Fonction | Réponse normale |
 |---|---|---|---|
 | `GET` | `/v1/health` | Santé agent, Docker, PostgreSQL et SQLite | `200` ou `503` |
+| `GET` | `/v1/ready` | Readiness stricte pour la validation d’enrôlement | `200` ou `503` |
 | `GET` | `/v1/resources` | Capacité CPU, mémoire, disque et déploiements | `200` |
 | `GET` | `/v1/deployments` | Liste des déploiements | `200` |
 | `POST` | `/v1/deployments` | Créer ou recréer un déploiement | `202` |
@@ -64,6 +65,9 @@ Il faut ensuite interroger `GET /v1/operations/{operation_id}`. Une seule opéra
 
 ### `GET /v1/health`
 
+La réponse inclut de façon additive `protocol_version`, `commit`, `build_date`
+et la capability `readiness_v1`.
+
 Teste Docker, PostgreSQL et SQLite.
 
 ```json
@@ -83,6 +87,13 @@ Teste Docker, PostgreSQL et SQLite.
 Le statut global devient `degraded` et le code HTTP `503` si au moins un composant ne répond pas.
 
 `version` est conservé pour les clients existants ; `agent_version` contient la même valeur. `node_id` provient de `node.id` ou de l'identité générée une fois et persistée dans SQLite. Le Control Plane détecte les domaines personnalisés exclusivement par la capability `hostname_aliases`, jamais en comparant un numéro de version.
+
+### `GET /v1/ready`
+
+Retourne `status: ready`, l’identité stable, la version Agent et la version de
+protocole uniquement lorsque Docker, PostgreSQL et l’état SQLite répondent.
+Cette route reste authentifiée par mTLS et sert à la validation indépendante
+du Dashboard avant le passage du Node à `READY`.
 
 ### `GET /v1/resources`
 

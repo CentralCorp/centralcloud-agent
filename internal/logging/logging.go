@@ -9,9 +9,15 @@ import (
 	"strings"
 )
 
-var secretPattern = regexp.MustCompile(`(?i)(password|passwd|pwd|token|secret|authorization|database_url)([=:]\s*)([^\s,;]+)`)
+var (
+	authorizationPattern = regexp.MustCompile(`(?i)(authorization)([=:]\s*)(?:bearer\s+)?([^\s,;]+)`)
+	secretPattern        = regexp.MustCompile(`(?i)(password|passwd|pwd|token|secret|database_url)([=:]\s*)([^\s,;]+)`)
+)
 
-func Redact(s string) string { return secretPattern.ReplaceAllString(s, `$1$2[REDACTED]`) }
+func Redact(s string) string {
+	s = authorizationPattern.ReplaceAllString(s, `$1$2[REDACTED]`)
+	return secretPattern.ReplaceAllString(s, `$1$2[REDACTED]`)
+}
 
 type redactingHandler struct{ next slog.Handler }
 

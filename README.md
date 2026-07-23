@@ -25,7 +25,17 @@ make fmt-check vet test test-race build-all
 make docker-build VERSION=1.1.0
 ```
 
-Le binaire Linux statique est `dist/centralcloud-agent-linux-<arch>`.
+Les binaires Linux statiques versionnés sont
+`dist/centralcloud-agent_<version>_linux_<arch>`.
+
+```sh
+centralcloud-agent version
+centralcloud-agent validate-config --config /etc/centralcloud-agent/config.yaml
+```
+
+Les releases publient un manifeste JSON, sa signature Ed25519 détachée, les
+checksums amd64/arm64 et un SBOM. L’installateur refuse toute signature,
+architecture ou somme incompatible.
 
 ## Configuration et secrets
 
@@ -71,6 +81,7 @@ Toutes les routes, y compris `/metrics`, nécessitent l’authentification. Les 
 
 ```text
 GET    /v1/health
+GET    /v1/ready
 GET    /v1/resources
 GET    /v1/deployments
 POST   /v1/deployments
