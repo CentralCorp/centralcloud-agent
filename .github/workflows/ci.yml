@@ -56,7 +56,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/centralcorp/centralcloud-agent
+          images: ghcr.io/centralcorp-cloud/centralcloud-agent
           tags: |
             type=ref,event=tag
             type=ref,event=branch
