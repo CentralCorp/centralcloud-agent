@@ -6,7 +6,8 @@
 
 L'adresse par défaut est `127.0.0.1:9443`. Toutes les routes, y compris `/metrics` et `/v1/health`, exigent une authentification.
 
-- Production : HTTPS avec certificat client mTLS.
+- Production : HTTPS terminé par Traefik avec un jeton Bearer distinct par Node.
+- Compatibilité : certificat client mTLS pour les anciens Nodes.
 - Développement : `Authorization: Bearer <token>` sur loopback uniquement.
 
 ### En-têtes des mutations
@@ -92,7 +93,7 @@ Le statut global devient `degraded` et le code HTTP `503` si au moins un composa
 
 Retourne `status: ready`, l’identité stable, la version Agent et la version de
 protocole uniquement lorsque Docker, PostgreSQL et l’état SQLite répondent.
-Cette route reste authentifiée par mTLS et sert à la validation indépendante
+Cette route reste authentifiée par le mode configuré et sert à la validation indépendante
 du Dashboard avant le passage du Node à `READY`.
 
 ### `GET /v1/resources`

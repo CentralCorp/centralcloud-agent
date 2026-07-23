@@ -91,7 +91,10 @@ func run(path string, log *slog.Logger) error {
 		return e
 	}
 	if c.Security.Mode == "token" && !isLoopback(c.Server.Address) {
-		return fmt.Errorf("token mode may only listen on a loopback address")
+		return fmt.Errorf("%s mode may only listen on a loopback address", c.Security.Mode)
+	}
+	if c.Security.Mode == "bearer" && !isLoopback(c.Server.Address) && !c.Security.BehindReverseProxy {
+		return fmt.Errorf("bearer mode on a non-loopback address requires security.behind_reverse_proxy")
 	}
 	clock := domain.RealClock{}
 	repo, e := storage.Open(c.Storage.DatabaseFile, clock)

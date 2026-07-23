@@ -22,4 +22,4 @@ if [[ ! -f /etc/centralcloud-agent/config.yaml ]]; then
   install -m 0640 -o root -g centralcloud-agent deploy/examples/config.yaml /etc/centralcloud-agent/config.yaml
 fi
 systemctl daemon-reload
-echo "Install certificates and secret files, validate config.yaml, then run: systemctl enable --now centralcloud-agent"
+echo "Install config.yaml and root-protected secret files (including api_token.sha256), validate them, then run: systemctl enable --now centralcloud-agent"

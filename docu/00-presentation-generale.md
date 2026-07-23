@@ -25,7 +25,8 @@ Ses responsabilités principales sont :
 - générer et protéger les secrets propres à chaque déploiement ;
 - rendre les opérations idempotentes et récupérables après un redémarrage ;
 - exposer l'état du nœud, les journaux et les métriques Prometheus ;
-- sécuriser les échanges avec le Control Plane par mTLS en production.
+- sécuriser les échanges avec le Control Plane par HTTPS et un jeton Bearer
+  distinct par Node en production (mTLS reste supporté pour les anciens Nodes).
 
 Le Control Plane sonde périodiquement `GET /v1/health` et `GET /v1/resources`. L'agent n'effectue aucun callback et ne choisit jamais lui-même le node d'un projet.
 
@@ -40,7 +41,7 @@ Infomaniak : Laravel + Blade
     |-- authentification, Stripe, dashboard et Control Plane
     |-- MySQL : users, paiements, projets, nodes et deployments
     |
-    | HTTPS + mTLS
+    | HTTPS + Bearer par Node
     v
 Node VPS
     |-- CentralCloud Node Agent (Go)

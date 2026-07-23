@@ -86,3 +86,21 @@ func TestValidateRejectsInvalidNodeCIDRAndEnvironmentAllowlist(t *testing.T) {
 		t.Fatal("invalid node identity, CIDR and environment key accepted")
 	}
 }
+
+func TestBearerModeRequiresSHA256File(t *testing.T) {
+	c := Defaults()
+	c.Security.Mode = "bearer"
+	c.Security.MasterKeyFile = "/tmp/key"
+	c.Postgres.Host = "postgres"
+	c.Postgres.AdministratorUsername = "provisioner"
+	c.Postgres.AdministratorPasswordFile = "/tmp/postgres"
+	c.Traefik.DomainSuffix = "example.test"
+	c.Panel.MigrationCommand = []string{"migrate"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("bearer mode without token_sha256_file was accepted")
+	}
+	c.Security.TokenSHA256File = "/tmp/agent-token.sha256"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid bearer configuration rejected: %v", err)
+	}
+}

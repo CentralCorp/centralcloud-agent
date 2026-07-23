@@ -12,13 +12,29 @@ Les frontières de confiance sont :
 - le compte administrateur PostgreSQL de provisionnement ;
 - les fichiers de configuration, certificats, clés et état local.
 
-Conséquence : l'API ne doit jamais être exposée publiquement. Le filtrage réseau du VPS doit n'autoriser que le Control Plane, même lorsque mTLS est activé.
+Conséquence : le port interne 9443 ne doit jamais être exposé publiquement. Seul
+Traefik y accède depuis son bridge local et publie l’API en HTTPS sur 443.
 
 Le Control Plane Laravel possède les utilisateurs, paiements et décisions métier dans MySQL. L'agent ne connaît que des identifiants de projet/déploiement et n'accède jamais à ce MySQL. Cette séparation limite l'impact d'une compromission applicative du Dashboard ou d'un panel, sans supprimer le besoin de protéger fortement l'API Agent.
 
 ## 2. Authentification de l'API
 
-### Production : mTLS
+### Production : Bearer par Node
+
+Le mode `bearer` :
+
+- reçoit un jeton aléatoire distinct par Node lors de l’enrôlement HTTPS ;
+- lit uniquement son SHA-256 depuis `security.token_sha256_file` ;
+- recalcule le SHA-256 du Bearer présenté et le compare en temps constant ;
+- exige `security.behind_reverse_proxy: true` lorsqu’il écoute hors loopback ;
+- ne nécessite ni CA privée CentralCloud, ni SAN client, ni IP de sortie fixe du
+  Dashboard.
+
+Traefik termine le TLS public. L’Agent lie 9443 uniquement à la passerelle du
+bridge Traefik détectée par l’installateur, et le pare-feu limite en plus ce
+port au subnet de ce bridge.
+
+### Compatibilité : mTLS
 
 Le mode `mtls` impose :
 
@@ -29,7 +45,7 @@ Le mode `mtls` impose :
 
 La CA valide la chaîne cryptographique et l'allowlist SAN limite les certificats clients autorisés à piloter l'agent.
 
-### Développement : bearer token
+### Développement : token en clair
 
 Le mode `token` :
 

@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +48,7 @@ type Server struct {
 	metrics     *ccmetrics.Metrics
 	log         *slog.Logger
 	token       []byte
+	tokenDigest []byte
 	allowed     map[string]bool
 	sourceCIDRs []netip.Prefix
 	mu          sync.Mutex
@@ -72,6 +75,16 @@ func New(c config.Config, svc *deployment.Service, repo domain.StateRepository, 
 		s.token = []byte(strings.TrimSpace(string(b)))
 		if len(s.token) < 32 {
 			return nil, fmt.Errorf("development token must be at least 32 bytes")
+		}
+	}
+	if c.Security.Mode == "bearer" {
+		b, e := os.ReadFile(c.Security.TokenSHA256File)
+		if e != nil {
+			return nil, e
+		}
+		s.tokenDigest, e = hex.DecodeString(strings.TrimSpace(string(b)))
+		if e != nil || len(s.tokenDigest) != sha256.Size {
+			return nil, fmt.Errorf("security.token_sha256_file must contain one SHA-256 digest in hexadecimal")
 		}
 	}
 	return s, nil
@@ -120,6 +133,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if s.cfg.Security.Mode == "token" {
 			v := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			ok = len(v) == len(s.token) && subtle.ConstantTimeCompare([]byte(v), s.token) == 1
+		} else if s.cfg.Security.Mode == "bearer" {
+			v := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			sum := sha256.Sum256([]byte(v))
+			ok = len(v) >= 32 && subtle.ConstantTimeCompare(sum[:], s.tokenDigest) == 1
 		} else if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			cert := r.TLS.PeerCertificates[0]
 			for _, v := range cert.DNSNames {

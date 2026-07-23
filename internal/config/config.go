@@ -34,6 +34,8 @@ type Config struct {
 		PrivateKeyFile     string        `yaml:"private_key_file"`
 		ClientCAFile       string        `yaml:"client_ca_file"`
 		TokenFile          string        `yaml:"token_file"`
+		TokenSHA256File    string        `yaml:"token_sha256_file"`
+		BehindReverseProxy bool          `yaml:"behind_reverse_proxy"`
 		MasterKeyFile      string        `yaml:"master_key_file"`
 		AllowedClientSANs  []string      `yaml:"allowed_client_sans"`
 		AllowedSourceCIDRs []string      `yaml:"allowed_source_cidrs"`
@@ -150,6 +152,7 @@ func applyEnv(c *Config) {
 	set("CENTRALCLOUD_SECURITY_PRIVATE_KEY_FILE", &c.Security.PrivateKeyFile)
 	set("CENTRALCLOUD_SECURITY_CLIENT_CA_FILE", &c.Security.ClientCAFile)
 	set("CENTRALCLOUD_SECURITY_TOKEN_FILE", &c.Security.TokenFile)
+	set("CENTRALCLOUD_SECURITY_TOKEN_SHA256_FILE", &c.Security.TokenSHA256File)
 	set("CENTRALCLOUD_SECURITY_MASTER_KEY_FILE", &c.Security.MasterKeyFile)
 	set("CENTRALCLOUD_DOCKER_SOCKET", &c.Docker.Socket)
 	set("CENTRALCLOUD_DOCKER_REGISTRY_USERNAME_FILE", &c.Docker.RegistryUsernameFile)
@@ -173,8 +176,8 @@ func (c Config) Validate() error {
 	if c.Server.Address == "" {
 		e = append(e, errors.New("server.address is required"))
 	}
-	if c.Security.Mode != "mtls" && c.Security.Mode != "token" {
-		e = append(e, errors.New("security.mode must be mtls or token"))
+	if c.Security.Mode != "mtls" && c.Security.Mode != "token" && c.Security.Mode != "bearer" {
+		e = append(e, errors.New("security.mode must be mtls, bearer or token"))
 	}
 	if c.Security.MasterKeyFile == "" {
 		e = append(e, errors.New("security.master_key_file is required"))
@@ -184,6 +187,9 @@ func (c Config) Validate() error {
 	}
 	if c.Security.Mode == "token" && c.Security.TokenFile == "" {
 		e = append(e, errors.New("security.token_file is required in token mode"))
+	}
+	if c.Security.Mode == "bearer" && c.Security.TokenSHA256File == "" {
+		e = append(e, errors.New("security.token_sha256_file is required in bearer mode"))
 	}
 	for _, raw := range c.Security.AllowedSourceCIDRs {
 		if _, err := netip.ParsePrefix(raw); err != nil {

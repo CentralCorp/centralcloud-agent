@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +35,36 @@ func testServer(t *testing.T, mode string) *Server {
 			t.Fatal(err)
 		}
 	}
+	if mode == "bearer" {
+		c.Security.TokenSHA256File = filepath.Join(t.TempDir(), "token.sha256")
+		sum := sha256.Sum256([]byte(strings.Repeat("b", 48)))
+		if err := os.WriteFile(c.Security.TokenSHA256File, []byte(hex.EncodeToString(sum[:])+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return testServerConfig(t, c)
+}
+
+func TestBearerAuthenticationUsesHashedToken(t *testing.T) {
+	h := testServer(t, "bearer").Handler()
+	for _, tc := range []struct {
+		token string
+		want  int
+	}{
+		{token: strings.Repeat("b", 48), want: http.StatusOK},
+		{token: strings.Repeat("x", 48), want: http.StatusUnauthorized},
+		{token: "", want: http.StatusUnauthorized},
+	} {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/health", nil)
+		if tc.token != "" {
+			r.Header.Set("Authorization", "Bearer "+tc.token)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Fatalf("token length=%d status=%d want=%d", len(tc.token), w.Code, tc.want)
+		}
+	}
 }
 
 func testServerConfig(t *testing.T, c config.Config) *Server {

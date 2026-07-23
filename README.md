@@ -4,8 +4,11 @@ Agent système Go installé sur chaque VPS CentralCloud. Il reçoit les ordres d
 
 ## Garanties de sécurité
 
-- mTLS TLS 1.3 obligatoire en production, avec validation de la CA et allowlist DNS/URI SAN.
-- Mode bearer token uniquement pour le développement et uniquement sur une adresse loopback.
+- Jeton Bearer aléatoire distinct par Node en production ; seul son SHA-256 est
+  stocké localement et la comparaison est effectuée en temps constant.
+- HTTPS public terminé par Traefik sur 443 ; le port Agent 9443 est limité au
+  bridge local du reverse proxy. Le mode mTLS reste compatible avec les anciens
+  Nodes.
 - Mutations protégées par `Idempotency-Key`, `X-Correlation-ID` et `X-Request-Timestamp`.
 - Secrets PostgreSQL générés par l’agent, chiffrés AES-256-GCM au repos et montés en fichier `0400`; aucun mot de passe n’est renvoyé.
 - Conteneurs non privilégiés, sans port hôte ni socket Docker, capacités supprimées, rootfs read-only, tmpfs, limites CPU/RAM/PID et `no-new-privileges`.
@@ -39,7 +42,10 @@ architecture ou somme incompatible.
 
 ## Configuration et secrets
 
-Copier `deploy/examples/config.yaml` vers `/etc/centralcloud-agent/config.yaml`. Les champs sensibles désignent toujours des fichiers. Créer notamment :
+Copier `deploy/examples/config.yaml` vers `/etc/centralcloud-agent/config.yaml`.
+L’installateur écrit `api_token.sha256`; le jeton en clair reste uniquement
+chiffré dans le Dashboard. Les champs sensibles désignent toujours des fichiers.
+Créer notamment :
 
 ```sh
 install -d -m 0750 /etc/centralcloud-agent/secrets
@@ -49,7 +55,12 @@ chown root:centralcloud-agent /etc/centralcloud-agent/secrets/*
 chmod 0640 /etc/centralcloud-agent/secrets/*
 ```
 
-La clé maître décodée doit faire exactement 32 octets. En mode développement, créer également `api_token` avec au moins 32 caractères. Configurer `node.id`/`node.name`, `traefik.container_name`, l'allowlist `panel.allowed_environment_keys` (vide par défaut) et, en production, `docker.require_image_digest: true`. Si `node.id` est omis, il est généré une seule fois dans SQLite. Les variables documentées `CENTRALCLOUD_*` ne transportent jamais directement un secret.
+La clé maître décodée doit faire exactement 32 octets. Configurer
+`node.id`/`node.name`, `traefik.container_name`, l'allowlist
+`panel.allowed_environment_keys` (vide par défaut) et, en production,
+`docker.require_image_digest: true`. Si `node.id` est omis, il est généré une
+seule fois dans SQLite. Les variables documentées `CENTRALCLOUD_*` ne
+transportent jamais directement le jeton Bearer.
 
 L’image CentralPanel doit :
 
@@ -68,7 +79,6 @@ Après construction :
 
 ```sh
 sudo deploy/install.sh dist/centralcloud-agent-linux-amd64
-sudo install -m 0640 -o root -g centralcloud-agent server.crt server.key client-ca.crt /etc/centralcloud-agent/tls/
 sudo systemctl enable --now centralcloud-agent
 journalctl -u centralcloud-agent -f
 ```

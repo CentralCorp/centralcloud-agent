@@ -11,7 +11,10 @@ Le mode de déploiement de référence est un binaire Linux exécuté par `syste
 - `/var/lib/centralcloud-agent/backups` pour les dumps chiffrés ;
 - `/var/lib/centralcloud-agent/panels` pour le stockage persistant des panels.
 
-En production, l'API doit fonctionner en mTLS avec TLS 1.3. Le mode token est réservé au développement et le programme refuse de l'écouter sur une adresse non loopback.
+En production, Traefik publie l’API sur HTTPS 443 et la relaie vers 9443 sur son
+bridge local. L’Agent utilise `security.mode: bearer` et ne stocke que le
+SHA-256 du jeton propre au Node. Le mode `mtls` reste disponible pour les
+installations historiques ; `token` est réservé au développement loopback.
 
 ## 2. Prérequis
 
@@ -21,7 +24,8 @@ En production, l'API doit fonctionner en mTLS avec TLS 1.3. Le mode token est r�
 - un rôle PostgreSQL provisionneur capable de créer/supprimer des rôles et bases ;
 - Traefik configuré avec le provider Docker et l'entrypoint attendu ;
 - un enregistrement DNS couvrant les hôtes sous `traefik.domain_suffix` et, pour chaque domaine personnalisé, un CNAME validé par le Control Plane avant l'appel Agent ;
-- une PKI fournissant le certificat serveur, sa clé privée et la CA des clients ;
+- un FQDN public pointant vers le Node afin que Traefik obtienne son certificat
+  ACME ;
 - l'image CentralPanel disponible dans le dépôt autorisé ;
 - Go 1.26.x ou Docker pour construire le binaire.
 
@@ -98,7 +102,7 @@ Si le registre Docker est privé, créer aussi :
 
 Les deux chemins doivent être configurés ensemble. En développement seulement, créer `api_token` avec au moins 32 caractères.
 
-## 6. Installer les certificats mTLS
+## 6. Ancien profil uniquement : installer les certificats mTLS
 
 ```sh
 sudo install -m 0640 -o root -g centralcloud-agent server.crt \
@@ -123,11 +127,13 @@ Le fichier principal est `/etc/centralcloud-agent/config.yaml`. Une base complè
 | Section | Paramètre | Rôle |
 |---|---|---|
 | `node` | `id`, `name` | Identité stable publiée au Control Plane ; l'ID est généré et persisté dans SQLite s'il est omis |
-| `server` | `address` | Adresse d'écoute, `127.0.0.1:9443` par défaut |
+| `server` | `address` | Adresse d'écoute interne, publiée uniquement via Traefik |
 | `server` | `operation_timeout` | Durée maximale d'une opération asynchrone |
 | `server` | `max_request_bytes` | Taille maximale d'un corps JSON |
 | `server` | `rate_per_second`, `rate_burst` | Limitation de débit par identité cliente |
-| `security` | `mode` | `mtls` en production, `token` en développement |
+| `security` | `mode` | `bearer` en production, `mtls` historique, `token` en développement |
+| `security` | `token_sha256_file` | Hash SHA-256 du jeton Agent propre au Node |
+| `security` | `behind_reverse_proxy` | Requis pour le profil Traefik non-loopback |
 | `security` | `master_key_file` | Clé AES de 32 octets |
 | `security` | `allowed_client_sans` | Allowlist des identités clientes mTLS |
 | `security` | `allowed_source_cidrs` | Défense IP IPv4/IPv6 basée exclusivement sur la connexion TCP |
@@ -265,17 +271,15 @@ Vérifier la version installée :
 /usr/local/bin/centralcloud-agent -version
 ```
 
-Tester la santé en mTLS :
+Tester localement les services et l’Agent sans extraire le Bearer :
 
 ```sh
-curl --fail --silent --show-error \
-  --cert control-plane.crt \
-  --key control-plane.key \
-  --cacert server-ca.crt \
-  https://127.0.0.1:9443/v1/health
+sudo centralcloud-installer doctor
 ```
 
-Une réponse `200` indique que Docker, PostgreSQL et SQLite répondent. Une réponse `503` avec `status: "degraded"` précise le composant en erreur.
+Le Dashboard effectue séparément son contrôle `/v1/ready` et `/v1/resources`
+sur l’URL HTTPS publique avec le Bearer chiffré en base. Le node ne conserve
+que son empreinte SHA-256 et ne peut donc pas réafficher le jeton.
 
 ## 10. Mise à jour du binaire
 
