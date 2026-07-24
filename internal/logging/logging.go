@@ -10,13 +10,19 @@ import (
 )
 
 var (
-	authorizationPattern = regexp.MustCompile(`(?i)(authorization)([=:]\s*)(?:bearer\s+)?([^\s,;]+)`)
-	secretPattern        = regexp.MustCompile(`(?i)(password|passwd|pwd|token|secret|database_url)([=:]\s*)([^\s,;]+)`)
+	authorizationPattern = regexp.MustCompile(`(?i)(authorization)(["'=:\s]+)(?:bearer\s+)?([^\s",;}]+)`)
+	secretPattern        = regexp.MustCompile(`(?i)(password|passwd|pwd|token|secret|credential|private[_ -]?key|app[_ -]?key|database_url)(["'=:\s]+)([^\s",;}]+)`)
 )
 
 func Redact(s string) string {
 	s = authorizationPattern.ReplaceAllString(s, `$1$2[REDACTED]`)
-	return secretPattern.ReplaceAllString(s, `$1$2[REDACTED]`)
+	s = secretPattern.ReplaceAllString(s, `$1$2[REDACTED]`)
+	for _, marker := range []string{"-----BEGIN PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----"} {
+		if strings.Contains(s, marker) {
+			return "[REDACTED PRIVATE KEY]"
+		}
+	}
+	return s
 }
 
 type redactingHandler struct{ next slog.Handler }
@@ -43,7 +49,7 @@ func redactAttrs(in []slog.Attr) []slog.Attr {
 }
 func redactAttr(a slog.Attr) slog.Attr {
 	k := strings.ToLower(a.Key)
-	if strings.Contains(k, "password") || strings.Contains(k, "secret") || strings.Contains(k, "token") || k == "authorization" || k == "database_url" {
+	if strings.Contains(k, "password") || strings.Contains(k, "secret") || strings.Contains(k, "token") || strings.Contains(k, "credential") || strings.Contains(k, "private_key") || k == "app_key" || k == "authorization" || k == "database_url" {
 		return slog.String(a.Key, "[REDACTED]")
 	}
 	if a.Value.Kind() == slog.KindString {

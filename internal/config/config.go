@@ -199,6 +199,12 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.Docker.Socket, "unix://") {
 		e = append(e, errors.New("docker.socket must use unix://"))
 	}
+	uidValue, gidValue, hasSeparator := strings.Cut(c.Docker.PanelUser, ":")
+	uid, uidErr := strconv.ParseUint(uidValue, 10, 32)
+	gid, gidErr := strconv.ParseUint(gidValue, 10, 32)
+	if !hasSeparator || uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
+		e = append(e, errors.New("docker.panel_user must use a non-root numeric uid:gid"))
+	}
 	if (c.Docker.RegistryUsernameFile == "") != (c.Docker.RegistryTokenFile == "") {
 		e = append(e, errors.New("docker registry username and token files must be configured together"))
 	}

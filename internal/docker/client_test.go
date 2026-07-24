@@ -74,3 +74,30 @@ func TestContainerTmpfsIsWritableByNonRootPanel(t *testing.T) {
 		}
 	}
 }
+
+func TestExecFailureIncludesBoundedRedactedDiagnostics(t *testing.T) {
+	output := &boundedExecOutput{limit: 96}
+	_, _ = output.Write([]byte("PDOException: connection timed out\npassword=must-not-leak\n"))
+	_, _ = output.Write([]byte(strings.Repeat("x", 256)))
+
+	err := execFailure(1, output.diagnostic())
+	if err == nil {
+		t.Fatal("execFailure() error = nil")
+	}
+	message := err.Error()
+	for _, expected := range []string{"container command exited with code 1", "PDOException", "password=[REDACTED]", "[output truncated]"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("exec error = %q, want %q", message, expected)
+		}
+	}
+	if strings.Contains(message, "must-not-leak") || len(message) > 512 {
+		t.Fatalf("exec diagnostic is unsafe or unbounded: %q", message)
+	}
+}
+
+func TestExecFailureWithoutOutputRemainsActionable(t *testing.T) {
+	err := execFailure(42, "")
+	if err == nil || err.Error() != "container command exited with code 42" {
+		t.Fatalf("unexpected exec error: %v", err)
+	}
+}

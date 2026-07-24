@@ -29,7 +29,7 @@ installations historiques ; `token` est réservé au développement loopback.
 - l'image CentralPanel disponible dans le dépôt autorisé ;
 - Go 1.26.x ou Docker pour construire le binaire.
 
-L'image CentralPanel v2 doit écouter en HTTP sur le port interne `8080`, définir son `HEALTHCHECK` sur `http://127.0.0.1:8080/up`, fonctionner sous `10001:10001` avec un rootfs en lecture seule, accepter les variables PostgreSQL et les secrets sous forme de fichiers, et supporter les commandes configurées dans `panel.install_command`, `panel.migration_command` et `panel.admin_reset_command`. Son unique montage persistant est `/app/storage`; `/tmp` et `/run` restent temporaires.
+L'image CentralPanel v2 doit écouter en HTTP sur le port interne `8080`, définir son `HEALTHCHECK` sur `http://127.0.0.1:8080/up`, fonctionner sous l’identité numérique non-root configurée par `docker.panel_user` avec un rootfs en lecture seule, accepter les variables PostgreSQL et les secrets sous forme de fichiers, et supporter les commandes configurées dans `panel.install_command`, `panel.migration_command` et `panel.admin_reset_command`. L’image déclare `10001:10001` par défaut ; l’installateur officiel remplace cette valeur par l’UID/GID réel du service Agent pour garder les bind mounts accessibles. Son unique montage persistant est `/app/storage`; `/tmp` et `/run` restent temporaires.
 
 ## 3. Construire l'agent
 
@@ -242,6 +242,11 @@ storage:
   backup_directory: "/var/lib/centralcloud-agent/backups"
   panel_directory: "/var/lib/centralcloud-agent/panels"
 ```
+
+`docker.panel_user` doit être au format numérique non-root `uid:gid`. Les
+conteneurs Panel et les utilitaires `pg_dump`/`pg_restore` utilisent la même
+valeur. Une installation gérée ne doit donc pas recopier aveuglément
+`10001:10001` : l’installateur la dérive du compte `centralcloud-agent`.
 
 Les CIDR ci-dessus sont documentaires : ils doivent être remplacés par les IP de sortie réelles. Si Infomaniak ne fournit pas d'IP de sortie fixe au Control Plane, utiliser un réseau privé, VPN ou tunnel contrôlé plutôt que d'ouvrir largement le port Agent.
 

@@ -15,8 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/centralcorp/centralcloud-node-agent/internal/domain"
+	"github.com/centralcorp/centralcloud-node-agent/internal/logging"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -344,15 +346,64 @@ func (c *Client) Exec(ctx context.Context, id string, argv []string) error {
 		return e
 	}
 	defer attached.Close()
-	_, _ = io.Copy(io.Discard, attached.Reader)
+	output := &boundedExecOutput{limit: maxExecDiagnosticBytes}
+	if _, e = stdcopy.StdCopy(output, output, attached.Reader); e != nil {
+		return fmt.Errorf("read container command output: %w", e)
+	}
 	ins, e := c.cli.ContainerExecInspect(ctx, created.ID)
 	if e != nil {
 		return e
 	}
 	if ins.ExitCode != 0 {
-		return fmt.Errorf("migration command exited with code %d", ins.ExitCode)
+		return execFailure(ins.ExitCode, output.diagnostic())
 	}
 	return nil
+}
+
+const maxExecDiagnosticBytes = 16 << 10
+
+type boundedExecOutput struct {
+	bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *boundedExecOutput) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := w.limit - w.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = w.Buffer.Write(p[:remaining])
+			w.truncated = true
+		} else {
+			_, _ = w.Buffer.Write(p)
+		}
+	} else if len(p) > 0 {
+		w.truncated = true
+	}
+	return original, nil
+}
+
+func (w *boundedExecOutput) diagnostic() string {
+	value := strings.ToValidUTF8(w.String(), "�")
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, value)
+	value = strings.TrimSpace(logging.Redact(value))
+	if w.truncated {
+		value += "\n[output truncated]"
+	}
+	return strings.TrimSpace(value)
+}
+
+func execFailure(exitCode int, diagnostic string) error {
+	if diagnostic == "" {
+		return fmt.Errorf("container command exited with code %d", exitCode)
+	}
+	return fmt.Errorf("container command exited with code %d\nDiagnostic de la commande :\n%s", exitCode, diagnostic)
 }
 func (c *Client) Logs(ctx context.Context, id string, cursor time.Time, limit int) ([]string, time.Time, error) {
 	f, e := c.find(ctx, id)

@@ -133,7 +133,9 @@ La clé maître ne doit pas être stockée avec une sauvegarde de `state.db` san
 
 Les conteneurs CentralPanel sont créés avec :
 
-- utilisateur non-root configurable, `10001:10001` par défaut ;
+- utilisateur non-root numérique configurable, `10001:10001` par défaut pour
+  une installation autonome et UID/GID réel du service pour l’installateur
+  officiel ;
 - rootfs en lecture seule ;
 - toutes les capacités Linux supprimées ;
 - `no-new-privileges` ;

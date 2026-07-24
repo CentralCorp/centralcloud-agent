@@ -104,3 +104,29 @@ func TestBearerModeRequiresSHA256File(t *testing.T) {
 		t.Fatalf("valid bearer configuration rejected: %v", err)
 	}
 }
+
+func TestPanelUserMustBeANumericNonRootIdentity(t *testing.T) {
+	base := func() Config {
+		c := Defaults()
+		c.Security.Mode = "bearer"
+		c.Security.MasterKeyFile = "/tmp/key"
+		c.Security.TokenSHA256File = "/tmp/agent-token.sha256"
+		c.Postgres.Host = "postgres"
+		c.Postgres.AdministratorUsername = "provisioner"
+		c.Postgres.AdministratorPasswordFile = "/tmp/postgres"
+		c.Traefik.DomainSuffix = "example.test"
+		return c
+	}
+	for _, invalid := range []string{"", "10001", "root:root", "0:10001", "10001:0"} {
+		c := base()
+		c.Docker.PanelUser = invalid
+		if err := c.Validate(); err == nil {
+			t.Fatalf("docker.panel_user %q accepted", invalid)
+		}
+	}
+	c := base()
+	c.Docker.PanelUser = "999:987"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid dynamic panel identity rejected: %v", err)
+	}
+}

@@ -121,7 +121,7 @@ func (m *Manager) run(ctx context.Context, id string, args []string, backupDir, 
 		return e
 	}
 	defer func() { _ = os.Remove(pgpass) }()
-	resp, e := m.cli.ContainerCreate(ctx, &container.Config{Image: m.cfg.Postgres.BackupImage, Cmd: args, Env: []string{"PGPASSFILE=/run/secrets/pgpass"}, Labels: map[string]string{"centralcloud.managed": "true", "centralcloud.backup": "true", "centralcloud.deployment_id": id}}, &container.HostConfig{ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Binds: []string{backupDir + ":/backup", pgpass + ":/run/secrets/pgpass:ro"}, Tmpfs: map[string]string{"/tmp": "rw,noexec,nosuid,size=32m"}}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{networks.Backend: {}}}, nil, "")
+	resp, e := m.cli.ContainerCreate(ctx, backupContainerConfig(m.cfg, id, args), &container.HostConfig{ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Binds: []string{backupDir + ":/backup", pgpass + ":/run/secrets/pgpass:ro"}, Tmpfs: map[string]string{"/tmp": "rw,noexec,nosuid,size=32m"}}, &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{networks.Backend: {}}}, nil, "")
 	if e != nil {
 		return e
 	}
@@ -143,6 +143,20 @@ func (m *Manager) run(ctx context.Context, id string, args []string, backupDir, 
 		return ctx.Err()
 	}
 	return nil
+}
+
+func backupContainerConfig(cfg config.Config, id string, args []string) *container.Config {
+	return &container.Config{
+		Image: cfg.Postgres.BackupImage,
+		User:  cfg.Docker.PanelUser,
+		Cmd:   args,
+		Env:   []string{"PGPASSFILE=/run/secrets/pgpass"},
+		Labels: map[string]string{
+			"centralcloud.managed":       "true",
+			"centralcloud.backup":        "true",
+			"centralcloud.deployment_id": id,
+		},
+	}
 }
 func extractUser(args []string) string {
 	for _, a := range args {

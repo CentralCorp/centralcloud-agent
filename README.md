@@ -83,7 +83,19 @@ sudo systemctl enable --now centralcloud-agent
 journalctl -u centralcloud-agent -f
 ```
 
-Le service démarre après Docker, utilise `centralcloud-agent` (UID 10001, identique au `panel_user` par défaut afin que le fichier secret `0400` soit lisible dans le conteneur), écrit dans journald et limite ses chemins inscriptibles à `/var/lib/centralcloud-agent` et `/run/centralcloud-agent`.
+Le service démarre après Docker, utilise `centralcloud-agent`, écrit dans
+journald et limite ses chemins inscriptibles à `/var/lib/centralcloud-agent` et
+`/run/centralcloud-agent`. L’installateur officiel renseigne `panel_user` avec
+l’UID/GID numérique réellement attribué à ce compte ; les panels et les
+helpers de sauvegarde PostgreSQL utilisent cette même identité afin de pouvoir
+lire leurs secrets et écrire dans leurs bind mounts sans privilèges root. Le
+script `deploy/install.sh` conserve `10001:10001` comme valeur autonome par
+défaut.
+
+Lorsqu’une commande d’installation, de migration ou de reset échoue, l’Agent
+renvoie un extrait borné de stdout/stderr pour rendre l’erreur exploitable. Les
+tokens, mots de passe, credentials, clés applicatives et clés privées sont
+redacted avant stockage ou transmission.
 
 ## API
 
